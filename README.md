@@ -50,6 +50,15 @@ repete buscas já armazenadas. Cada diretório fixa queries, idioma, país,
 localização, profundidade e versão da ferramenta; alterações exigem outro
 `--run-dir`. Use um processo por diretório.
 
+Durante a execução, o terminal interativo mostra barras coloridas de queries,
+páginas da query atual e links da página atual, além da operação em andamento e
+do tempo decorrido. A barra de páginas indica uso do limite configurado, não
+quantas páginas o Google ainda oferecerá. Em redirecionamento de saída, os mesmos
+eventos aparecem como linhas simples; `--no-progress` os desativa. O progresso
+é somente visual: `state.sqlite` continua sendo a fonte para retomada. Se você
+atualizar o código durante uma execução, as barras aparecerão na próxima
+invocação, que poderá reutilizar `--run-dir`.
+
 | Arquivo | Conteúdo |
 |---|---|
 | `companies.csv` | Somente as três colunas solicitadas |

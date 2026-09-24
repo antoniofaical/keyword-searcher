@@ -390,3 +390,60 @@ def test_http_redirect_checks_each_destination(monkeypatch):
         client.get("https://example.org/")
     assert client.opener.open.call_count == 1
     assert check.call_count == 2
+
+
+def test_progress_counts_saved_results_and_incomplete_queries(tmp_path):
+    from io import StringIO
+
+    from keyword_searcher.progress import TerminalProgress
+
+    store = Store(tmp_path / "state.sqlite", {})
+    store.save_page("cached", 0, payload(["https://example.org/"]))
+    store.save_resolution(
+        "cached", "https://example.org/", Resolution("confirmed", "Example", "https://example.org/")
+    )
+    provider = Mock()
+    provider.parse = SerpApi.parse
+    provider.search.side_effect = BudgetExceeded("search_request_limit")
+    stream = StringIO()
+    with TerminalProgress(2, 2, stream=stream) as display:
+        run(["uncached", "cached"], provider, Mock(), store, 2, progress=display)
+    assert display.queries_done == 2
+    assert display.confirmed == 1
+    assert "Query 1/2: incomplete" in stream.getvalue()
+    assert "Link 1/1: stored example.org" in stream.getvalue()
+    assert "\033[" not in stream.getvalue()
+    store.close()
+
+
+def test_live_progress_renders_colored_bars_and_no_progress_is_silent(monkeypatch):
+    from io import StringIO
+
+    from keyword_searcher.progress import TerminalProgress
+
+    class Tty(StringIO):
+        encoding = "utf-8"
+
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    output = Tty()
+    with TerminalProgress(1, 1, stream=output) as display:
+        display.begin_query(1, "inventory")
+        display.begin_page(1, False)
+        display.page_ready(1)
+        display.begin_result("https://example.org/", False)
+        display.end_result(Resolution("confirmed", "Example", "https://example.org/"))
+        display.finish_query("complete")
+    assert "\033[36m" in output.getvalue()
+    assert "\033[34m" in output.getvalue()
+    assert "\033[32m" in output.getvalue()
+    assert "confirmed=1" in output.getvalue()
+    assert output.getvalue().endswith("\n")
+
+    silent = StringIO()
+    with TerminalProgress(1, 1, stream=silent, enabled=False) as display:
+        display.begin_query(1, "inventory")
+        display.finish_query("complete")
+    assert silent.getvalue() == ""

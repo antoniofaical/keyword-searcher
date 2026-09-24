@@ -7,6 +7,7 @@ from . import __version__
 from .http import HttpClient
 from .models import DiscoveryError
 from .pipeline import run
+from .progress import TerminalProgress
 from .resolve import WebsiteResolver
 from .search import SerpApi
 from .store import Store
@@ -46,6 +47,7 @@ def main(argv=None):
     parser.add_argument("--language", default="pt")
     parser.add_argument("--location", default="")
     parser.add_argument("--retry-pending", action="store_true")
+    parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args(argv)
     store = None
     try:
@@ -73,7 +75,18 @@ def main(argv=None):
         )
         interrupted = False
         try:
-            run(queries, provider, WebsiteResolver(http), store, args.max_pages, args.retry_pending)
+            with TerminalProgress(
+                len(queries), args.max_pages, enabled=not args.no_progress
+            ) as progress:
+                run(
+                    queries,
+                    provider,
+                    WebsiteResolver(http),
+                    store,
+                    args.max_pages,
+                    args.retry_pending,
+                    progress,
+                )
         except KeyboardInterrupt:
             interrupted = True
         finally:
