@@ -30,7 +30,7 @@ def read_queries(path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Google queries → institutional entrypoints")
+    parser = argparse.ArgumentParser(description="Google queries to institutional entrypoints")
     parser.add_argument(
         "--queries", required=True, type=Path, help="UTF-8 text, one query per line"
     )
@@ -78,7 +78,7 @@ def main(argv=None):
             interrupted = True
         finally:
             report = store.export(args.run_dir)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        print(json.dumps(report, ensure_ascii=True, indent=2))
         if interrupted:
             return 130
         incomplete = any(q["status"] != "complete" for q in report["queries"])
