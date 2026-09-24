@@ -7,7 +7,7 @@ import pytest
 from keyword_searcher.cli import main, read_queries
 from keyword_searcher.http import Response
 from keyword_searcher.models import BudgetExceeded, DiscoveryError, Resolution, SearchResult
-from keyword_searcher.pipeline import run
+from keyword_searcher.pipeline import recheck_sites, run
 from keyword_searcher.resolve import WebsiteResolver
 from keyword_searcher.search import SerpApi
 from keyword_searcher.store import Store
@@ -138,6 +138,43 @@ def test_non_institutional_not_fetched(url):
     client = Mock()
     assert WebsiteResolver(client).resolve(SearchResult("", url)).status == "skipped"
     client.get.assert_not_called()
+
+
+def test_sourceforge_directory_is_not_exported():
+    client = Mock()
+    result = WebsiteResolver(client).resolve(
+        SearchResult(
+            "Hospital food service software",
+            "https://sourceforge.net/software/food-service-management/windows/",
+        )
+    )
+    assert result.status == "skipped"
+    client.get.assert_not_called()
+
+
+def test_deep_product_url_resolves_to_verified_homepage():
+    client = Mock()
+    product = "https://www.alphaebm.com/hospital-food-service-software-uae.html"
+    client.get.side_effect = [
+        web(html("Alpha EBM", product), product),
+        web('<meta property="og:site_name" content="Alpha EBM">', "https://www.alphaebm.com/"),
+    ]
+    result = WebsiteResolver(client).resolve(SearchResult("Alpha EBM", product))
+    assert (result.status, result.url) == ("confirmed", "https://www.alphaebm.com/")
+
+
+def test_site_name_on_homepage_suffices_without_schema():
+    client = Mock()
+    client.get.side_effect = [
+        web("<title>Product</title>", "https://example.org/product"),
+        web('<meta property="og:site_name" content="Example">'),
+    ]
+    result = WebsiteResolver(client).resolve(SearchResult("Product", "https://example.org/product"))
+    assert (result.status, result.name, result.url) == (
+        "confirmed",
+        "Example",
+        "https://example.org/",
+    )
 
 
 def test_mismatched_home_identity():
@@ -315,7 +352,42 @@ def test_budget_does_not_skip_later_cached_query(tmp_path):
     run(["uncached", "cached"], provider, Mock(), store, 3)
     report = store.export(tmp_path)
     by_query = {q["query"]: q["status"] for q in report["queries"]}
-    assert by_query == {"uncached": "incomplete", "cached": "complete"}
+    assert by_query == {"uncached": "not_started", "cached": "complete"}
+    store.close()
+
+
+def test_budget_marks_untouched_queries_and_repairs_legacy_status(tmp_path):
+    store = Store(tmp_path / "state.sqlite", {})
+    store.save_page("partial", 0, payload(next_start=10))
+    store.progress("untouched", "incomplete", "search_request_limit")
+    store.ensure_queries(["partial", "untouched", "never_attempted"])
+    provider = Mock()
+    provider.parse = SerpApi.parse
+    provider.search.side_effect = BudgetExceeded("search_request_limit")
+    run(["partial", "untouched", "never_attempted"], provider, Mock(), store, 2)
+    statuses = {q["query"]: q["status"] for q in store.export(tmp_path)["queries"]}
+    assert statuses == {
+        "partial": "incomplete",
+        "untouched": "not_started",
+        "never_attempted": "not_started",
+    }
+    provider.search.assert_called_once()
+    store.close()
+
+
+def test_recheck_saved_pages_without_search_requests(tmp_path):
+    store = Store(tmp_path / "state.sqlite", {})
+    store.save_page("q", 0, payload(["https://example.org/product"]))
+    store.save_resolution("q", "https://example.org/product", Resolution("pending"))
+    provider = Mock()
+    provider.parse = SerpApi.parse
+    resolver = Mock()
+    resolver.resolve.return_value = Resolution("confirmed", "Example", "https://example.org/")
+    before = store.requests()
+    recheck_sites(["q", "untouched"], provider, resolver, store)
+    provider.search.assert_not_called()
+    assert store.requests() == before
+    assert store.export(tmp_path)["exported_rows"] == 1
     store.close()
 
 
@@ -410,7 +482,7 @@ def test_progress_counts_saved_results_and_incomplete_queries(tmp_path):
         run(["uncached", "cached"], provider, Mock(), store, 2, progress=display)
     assert display.queries_done == 2
     assert display.confirmed == 1
-    assert "Query 1/2: incomplete" in stream.getvalue()
+    assert "Query 1/2: not_started" in stream.getvalue()
     assert "Link 1/1: stored example.org" in stream.getvalue()
     assert "\033[" not in stream.getvalue()
     store.close()

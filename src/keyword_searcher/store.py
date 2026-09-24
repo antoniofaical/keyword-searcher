@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import sqlite3
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
@@ -81,6 +82,28 @@ class Store:
                 "INSERT OR REPLACE INTO progress VALUES (?, ?, ?)", (query, status, reason)
             )
 
+    def ensure_queries(self, queries):
+        with self.db:
+            for query in queries:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO progress VALUES (?, 'not_started', '')", (query,)
+                )
+            # Repair old runs that called untouched queries incomplete.
+            self.db.execute("""
+                UPDATE progress SET status='not_started'
+                WHERE status='incomplete' AND reason='search_request_limit'
+                  AND NOT EXISTS (SELECT 1 FROM pages WHERE pages.query=progress.query)
+            """)
+
+    def saved_queries(self, queries):
+        available = {row[0] for row in self.db.execute("SELECT DISTINCT query FROM pages")}
+        return [query for query in queries if query in available]
+
+    def saved_pages(self, query):
+        return self.db.execute(
+            "SELECT start, payload FROM pages WHERE query=? ORDER BY start", (query,)
+        ).fetchall()
+
     def export(self, directory):
         directory = Path(directory)
         temp = directory / "companies.csv.tmp"
@@ -110,6 +133,7 @@ class Store:
         report = dict(
             search_requests=self.requests(),
             exported_rows=len(seen),
+            query_status_counts=dict(Counter(q["status"] for q in statuses)),
             queries=statuses,
             pending=sum(x["status"] == "pending" for x in pending),
             skipped=sum(x["status"] == "skipped" for x in pending),

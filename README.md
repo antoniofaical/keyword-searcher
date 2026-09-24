@@ -50,6 +50,18 @@ repete buscas já armazenadas. Cada diretório fixa queries, idioma, país,
 localização, profundidade e versão da ferramenta; alterações exigem outro
 `--run-dir`. Use um processo por diretório.
 
+Após atualizar a ferramenta, reavalie todos os resultados já salvos sem gastar
+novas consultas de busca (a chave da SerpApi não é necessária nesse modo):
+
+```powershell
+keyword-searcher --queries .\queries.txt --run-dir .\runs\pilot --max-pages 2 --max-search-requests 10 --recheck-sites
+```
+
+Esse comando revisita os sites dos resultados armazenados, substitui as decisões
+anteriores e recria os arquivos de saída. Pode fazer requisições HTTP para os
+sites das empresas; não faz novas buscas no Google. Execute-o depois que a
+execução anterior terminar, usando o mesmo diretório e a mesma configuração.
+
 Durante a execução, o terminal interativo mostra barras coloridas de queries,
 páginas da query atual e links da página atual, além da operação em andamento e
 do tempo decorrido. A barra de páginas indica uso do limite configurado, não
@@ -64,7 +76,7 @@ invocação, que poderá reutilizar `--run-dir`.
 | `companies.csv` | Somente as três colunas solicitadas |
 | `state.sqlite` | Configuração, respostas do provedor com chave ocultada, evidências, resoluções e progresso |
 | `pending.json` | Casos pendentes e resultados ignorados, com motivos |
-| `report.json` | Cobertura por query, limites, falhas, contagem de chamadas e linhas |
+| `report.json` | Cobertura por query, totais por estado, limites, falhas, contagem de chamadas e linhas |
 
 Uma URL aparece uma vez por query. A mesma URL pode aparecer em queries diferentes.
 Não há fusão de marcas por domínio. Subdomínios, paths e parâmetros funcionais são
@@ -72,21 +84,23 @@ preservados; fragmentos e parâmetros conhecidos de rastreamento são removidos.
 
 ## O que significa confirmado nesta versão
 
-A resolução é **heurística e conservadora**, baseada em identidade estruturada
-JSON-LD (`Organization` e tipos empresariais explícitos) do próprio site.
+A resolução é **heurística e conservadora**, baseada na identidade declarada
+pelo próprio site (JSON-LD `Organization`/`WebSite` ou `og:site_name` na home).
 O nome não é adivinhado a partir do domínio ou do título de busca.
 
 1. Inspeciona a página encontrada, exceto fontes intermediárias reconhecidas e
    caminhos editoriais identificados.
 2. Procura uma única organização com nome e URL no mesmo host (aceitando `www`).
-3. Se não houver identidade, pode seguir um único link explícito de home/logo.
-4. Verifica o endereço declarado pela organização e a concordância da identidade.
+3. Verifica a home do mesmo host ou um link explícito de home/logo; um URL de
+   produto que declara a si mesmo não se torna automaticamente um entrypoint.
+4. Compara a identidade da home com a declarada na página encontrada, se houver.
 5. Exporta o endereço final após redirecionamentos. Ausência ou conflito de
    evidências produz pendência, nunca um nome inventado.
 
-No máximo três páginas são inspecionadas por resultado, além de redirecionamentos
-limitados. Não há crawling recursivo ou execução de JavaScript. Sites dependentes
-de JavaScript, sem JSON-LD, protegidos por CAPTCHA ou com identidades complexas
+As páginas inspecionadas por resultado são limitadas à origem, home declarada,
+link explícito de home/logo e raiz do host. Não há crawling recursivo ou execução
+de JavaScript. Sites dependentes de JavaScript, sem identidade verificável na
+home, protegidos por CAPTCHA ou com identidades complexas
 podem ficar pendentes. Não é uma verificação jurídica da empresa: metadata pode
 estar errada. O reconhecimento de fontes intermediárias também é heurístico;
 diretórios desconhecidos podem produzir falsos positivos. É necessário medir
@@ -94,7 +108,10 @@ precisão e cobertura numa amostra real antes do uso em escala.
 
 O estado `complete` significa que o provedor não indicou uma próxima página.
 `limited` significa que havia continuação, mas a profundidade configurada acabou.
-`incomplete`, `failed`, `interrupted` e `not_started` não são conclusão.
+`not_started` significa que a query ainda não teve página de busca salva;
+`incomplete` significa que uma query iniciada ficou sem cobertura completa.
+`failed` e `interrupted` também não são conclusão. O terminal mostra apenas os
+totais; `report.json` inclui os detalhes das queries.
 Uma query completa ainda pode conter resoluções pendentes.
 
 Códigos de saída: `0` sem consultas incompletas nem resoluções pendentes; `2` com

@@ -1,10 +1,14 @@
+import json
+
 from .models import BudgetExceeded, DiscoveryError
 
 
 def run(queries, provider, resolver, store, max_pages, retry_pending=False, progress=None):
-    for query in queries:
-        store.progress(query, "not_started")
+    store.ensure_queries(queries)
+    budget_exhausted = False
     for query_index, query in enumerate(queries, start=1):
+        if budget_exhausted and store.page(query, 0) is None:
+            continue
         if progress:
             progress.begin_query(query_index, query)
         store.progress(query, "running")
@@ -14,6 +18,10 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
         try:
             for page_index in range(max_pages):
                 payload = store.page(query, start)
+                if budget_exhausted and payload is None:
+                    status = "incomplete" if page_index else "not_started"
+                    store.progress(query, status, "search_request_limit")
+                    break
                 if progress:
                     progress.begin_page(page_index + 1, payload is not None)
                 if payload is None:
@@ -53,7 +61,8 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
                 status = "limited"
                 store.progress(query, status, "max_pages")
         except BudgetExceeded:
-            status = "incomplete"
+            budget_exhausted = True
+            status = "incomplete" if store.page(query, 0) is not None else "not_started"
             store.progress(query, status, "search_request_limit")
             # Other queries can still be processed entirely from stored responses.
             continue
@@ -66,3 +75,28 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
         finally:
             if progress:
                 progress.finish_query(status)
+
+
+def recheck_sites(queries, provider, resolver, store, progress=None):
+    """Re-resolve stored organic results, making no search provider requests."""
+    for index, query in enumerate(store.saved_queries(queries), start=1):
+        if progress:
+            progress.begin_query(index, query)
+        seen = set()
+        for page_number, (start, raw) in enumerate(store.saved_pages(query), start=1):
+            if progress:
+                progress.begin_page(page_number, True)
+            page = provider.parse(json.loads(raw), start)
+            results = [result for result in page.results if result.url not in seen]
+            if progress:
+                progress.page_ready(len(results))
+            for result in results:
+                if progress:
+                    progress.begin_result(result.url, False)
+                resolution = resolver.resolve(result)
+                store.save_resolution(query, result.url, resolution)
+                seen.add(result.url)
+                if progress:
+                    progress.end_result(resolution)
+        if progress:
+            progress.finish_query("rechecked")

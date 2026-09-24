@@ -24,6 +24,12 @@ INTERMEDIARIES = {
     "github.com",
     "reddit.com",
     "medium.com",
+    "sourceforge.net",
+    "slideshare.net",
+    "scribd.com",
+    "play.google.com",
+    "pinterest.com",
+    "mementodatabase.com",
 }
 EDITORIAL = re.compile(
     r"/(blog|news|noticias|notícias|articles?|press|compare|reviews?)(/|$)", re.IGNORECASE
@@ -86,6 +92,47 @@ def evidence(soup, base):
     return candidates
 
 
+def home_name(soup, base):
+    """Read self-declared identity on a homepage; conflict stays unresolved."""
+    organizations = {name for name, _ in evidence(soup, base)}
+    if len(organizations) > 1:
+        return None
+    if organizations:
+        return next(iter(organizations))
+    names = set()
+    for node in nodes(soup):
+        if "WebSite" in types(node) and isinstance(node.get("name"), str):
+            url = node.get("url")
+            if isinstance(url, str):
+                try:
+                    if same_host(normalize_url(urljoin(base, url)), base):
+                        names.add(" ".join(node["name"].split()))
+                except DiscoveryError:
+                    pass
+    for tag in soup.select('meta[property="og:site_name"][content]'):
+        names.add(" ".join(tag["content"].split()))
+    names.discard("")
+    return next(iter(names)) if len({name.casefold() for name in names}) == 1 else None
+
+
+def home_links(soup, base):
+    homes = set()
+    for anchor in soup.select("a[href]"):
+        label = (
+            (anchor.get("aria-label", "") + " " + anchor.get_text(" ", strip=True)).strip().lower()
+        )
+        is_home = label in {"home", "homepage", "início", "inicio", "página inicial"}
+        is_logo = bool(anchor.find("img", alt=re.compile("logo", re.IGNORECASE)))
+        if is_home or is_logo:
+            try:
+                target = normalize_url(urljoin(base, anchor["href"]))
+            except DiscoveryError:
+                continue
+            if same_host(base, target):
+                homes.add(target)
+    return homes
+
+
 class WebsiteResolver:
     """Bounded identity inspection, not a crawler. Ambiguity stays pending."""
 
@@ -112,48 +159,59 @@ class WebsiteResolver:
                 return Resolution("skipped", reason="non_institutional_source")
             base, soup = self.page(original)
             candidates = evidence(soup, base)
-            # Without structured identity, inspect only an explicit home/logo link.
-            if not candidates:
-                homes = set()
-                for anchor in soup.select("a[href]"):
-                    label = (
-                        (anchor.get("aria-label", "") + " " + anchor.get_text(" ", strip=True))
-                        .strip()
-                        .lower()
-                    )
-                    is_home = label in {"home", "homepage", "início", "inicio", "página inicial"}
-                    is_logo = bool(anchor.find("img", alt=re.compile("logo", re.IGNORECASE)))
-                    if is_home or is_logo:
-                        try:
-                            target = normalize_url(urljoin(base, anchor["href"]))
-                        except DiscoveryError:
-                            continue
-                        if same_host(base, target) and target != base:
-                            homes.add(target)
-                if len(homes) == 1:
-                    base, soup = self.page(homes.pop())
-                    candidates = evidence(soup, base)
-            if len(candidates) != 1:
+            if len(candidates) > 1:
                 return Resolution("pending", reason="missing_or_ambiguous_company_identity")
-            name, target = next(iter(candidates))
-            # Check declared home; its own identity must agree before exporting.
-            if target != base:
-                final, home = self.page(target)
-                confirmed = evidence(home, final)
-                if not any(
-                    n.casefold() == name.casefold() and same_host(u, final) for n, u in confirmed
-                ):
-                    return Resolution("pending", reason="entrypoint_identity_mismatch")
-                base = final
+            expected_name, declared = next(iter(candidates)) if candidates else (None, None)
+            root = normalize_url(f"{urlsplit(base).scheme}://{urlsplit(base).netloc}/")
+            # A declared locale root can be an institutional entrypoint; a product
+            # page declaring itself is not a homepage, even with Organization JSON-LD.
+            homes = []
+            if declared and re.fullmatch(
+                r"/(?:[a-z]{2}(?:-[a-z]{2})?)?/?", urlsplit(declared).path, re.IGNORECASE
+            ):
+                homes.append(declared)
+            homes.extend(sorted(home_links(soup, base), key=len))
+            homes.append(root)
+            checked = set()
+            mismatch = False
+            for url in homes:
+                if url in checked or not same_host(url, base):
+                    continue
+                checked.add(url)
+                try:
+                    final, home = (base, soup) if url == base else self.page(url)
+                except DiscoveryError:
+                    continue
+                # A redirect must still lead to the same institutional host.
+                if not same_host(final, base):
+                    mismatch = True
+                    continue
+                name = home_name(home, final)
+                if not name:
+                    continue
+                if expected_name and name.casefold() != expected_name.casefold():
+                    mismatch = True
+                    continue
+                return Resolution(
+                    "confirmed",
+                    name,
+                    final,
+                    "homepage_identity_verified",
+                    json.dumps(
+                        {
+                            "name": name,
+                            "source_url": original,
+                            "declared_url": declared,
+                            "entrypoint": final,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
             return Resolution(
-                "confirmed",
-                name,
-                base,
-                "organization_url_verified",
-                json.dumps(
-                    {"name": name, "declared_url": target, "source_url": original},
-                    ensure_ascii=False,
-                ),
+                "pending",
+                reason="entrypoint_identity_mismatch"
+                if mismatch
+                else "missing_or_ambiguous_company_identity",
             )
         except DiscoveryError as exc:
             return Resolution("pending", reason=str(exc))

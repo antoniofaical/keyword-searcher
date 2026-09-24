@@ -6,7 +6,7 @@ from pathlib import Path
 from . import __version__
 from .http import HttpClient
 from .models import DiscoveryError
-from .pipeline import run
+from .pipeline import recheck_sites, run
 from .progress import TerminalProgress
 from .resolve import WebsiteResolver
 from .search import SerpApi
@@ -47,6 +47,11 @@ def main(argv=None):
     parser.add_argument("--language", default="pt")
     parser.add_argument("--location", default="")
     parser.add_argument("--retry-pending", action="store_true")
+    parser.add_argument(
+        "--recheck-sites",
+        action="store_true",
+        help="Revisit saved result sites without any new Google searches",
+    )
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args(argv)
     store = None
@@ -64,6 +69,7 @@ def main(argv=None):
             max_pages=args.max_pages,
         )
         store = Store(args.run_dir / "state.sqlite", config)
+        store.ensure_queries(queries)
         http = HttpClient()
         provider = SerpApi(
             http,
@@ -75,23 +81,37 @@ def main(argv=None):
         )
         interrupted = False
         try:
+            visible_queries = (
+                len(store.saved_queries(queries)) if args.recheck_sites else len(queries)
+            )
             with TerminalProgress(
-                len(queries), args.max_pages, enabled=not args.no_progress
+                visible_queries, args.max_pages, enabled=not args.no_progress
             ) as progress:
-                run(
-                    queries,
-                    provider,
-                    WebsiteResolver(http),
-                    store,
-                    args.max_pages,
-                    args.retry_pending,
-                    progress,
-                )
+                resolver = WebsiteResolver(http)
+                if args.recheck_sites:
+                    recheck_sites(queries, provider, resolver, store, progress)
+                else:
+                    run(
+                        queries,
+                        provider,
+                        resolver,
+                        store,
+                        args.max_pages,
+                        args.retry_pending,
+                        progress,
+                    )
         except KeyboardInterrupt:
             interrupted = True
         finally:
             report = store.export(args.run_dir)
-        print(json.dumps(report, ensure_ascii=True, indent=2))
+        print(
+            json.dumps(
+                {key: value for key, value in report.items() if key != "queries"},
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        print(f"Detailed coverage: {args.run_dir / 'report.json'}")
         if interrupted:
             return 130
         incomplete = any(q["status"] != "complete" for q in report["queries"])
