@@ -1,5 +1,6 @@
 import json
 
+from .apify import ApifyRecoveryRequired
 from .models import BudgetExceeded, DiscoveryError
 
 
@@ -63,9 +64,18 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
         except BudgetExceeded:
             budget_exhausted = True
             status = "incomplete" if store.page(query, 0) is not None else "not_started"
-            store.progress(query, status, "search_request_limit")
+            store.progress(
+                query,
+                status,
+                "apify_page_limit"
+                if provider.__class__.__name__ == "ApifyGoogle"
+                else "search_request_limit",
+            )
             # Other queries can still be processed entirely from stored responses.
             continue
+        except ApifyRecoveryRequired:
+            store.progress(query, status, "apify_run_needs_recovery")
+            raise
         except DiscoveryError as exc:
             store.progress(query, status, str(exc))
         except KeyboardInterrupt:

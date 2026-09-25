@@ -22,6 +22,12 @@ class Store:
                 query TEXT, discovered_url TEXT, payload TEXT NOT NULL,
                 PRIMARY KEY(query, discovered_url));
             CREATE TABLE IF NOT EXISTS progress (query TEXT PRIMARY KEY, status TEXT, reason TEXT);
+            CREATE TABLE IF NOT EXISTS apify_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                queries TEXT NOT NULL,
+                reserved_pages INTEGER NOT NULL,
+                run_id TEXT,
+                status TEXT NOT NULL);
         """)
         encoded = json.dumps(config, sort_keys=True, ensure_ascii=False)
         previous = self.db.execute("SELECT value FROM meta WHERE key='config'").fetchone()
@@ -49,6 +55,66 @@ class Store:
 
     def requests(self):
         return int(self.db.execute("SELECT value FROM meta WHERE key='requests'").fetchone()[0])
+
+    def apify_reserved_pages(self):
+        return self.db.execute(
+            "SELECT COALESCE(SUM(reserved_pages),0) FROM apify_batches"
+        ).fetchone()[0]
+
+    def apify_pages(self):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM pages WHERE json_extract(payload, '$.provider')='apify-google'"
+        ).fetchone()[0]
+
+    def apify_open_batch(self):
+        row = self.db.execute(
+            "SELECT id, queries, run_id, status FROM apify_batches "
+            "WHERE status IN ('planned', 'running') ORDER BY id LIMIT 1"
+        ).fetchone()
+        return (row[0], json.loads(row[1]), row[2], row[3]) if row else None
+
+    def apify_plan_batch(self, queries, pages, maximum):
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            if self.apify_reserved_pages() + pages > maximum:
+                raise BudgetExceeded("apify_page_limit")
+            cursor = self.db.execute(
+                "INSERT INTO apify_batches (queries,reserved_pages,status) VALUES (?,?,'planned')",
+                (json.dumps(queries, ensure_ascii=False), pages),
+            )
+            self.db.commit()
+            return cursor.lastrowid
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    def apify_set_run(self, batch_id, run_id):
+        with self.db:
+            self.db.execute(
+                "UPDATE apify_batches SET run_id=?, status='running' WHERE id=? AND status='planned'",
+                (run_id, batch_id),
+            )
+
+    def apify_recover_run(self, run_id):
+        import re
+
+        if not re.fullmatch(r"[a-zA-Z0-9]+", run_id):
+            raise DiscoveryError("Invalid Apify run ID")
+        batch = self.apify_open_batch()
+        if not batch or batch[3] != "planned":
+            raise DiscoveryError("No unconfirmed Apify batch to recover")
+        self.apify_set_run(batch[0], run_id)
+
+    def apify_finish_batch(self, batch_id):
+        with self.db:
+            self.db.execute("UPDATE apify_batches SET status='done' WHERE id=?", (batch_id,))
+
+    def apify_abandon_batch(self):
+        batch = self.apify_open_batch()
+        if not batch:
+            raise DiscoveryError("No unfinished Apify batch to abandon")
+        with self.db:
+            self.db.execute("UPDATE apify_batches SET status='abandoned' WHERE id=?", (batch[0],))
 
     def page(self, query, start):
         row = self.db.execute(
@@ -132,6 +198,8 @@ class Store:
         ]
         report = dict(
             search_requests=self.requests(),
+            apify_pages=self.apify_pages(),
+            apify_reserved_pages=self.apify_reserved_pages(),
             exported_rows=len(seen),
             query_status_counts=dict(Counter(q["status"] for q in statuses)),
             queries=statuses,

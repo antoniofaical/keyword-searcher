@@ -62,6 +62,43 @@ anteriores e recria os arquivos de saída. Pode fazer requisições HTTP para os
 sites das empresas; não faz novas buscas no Google. Execute-o depois que a
 execução anterior terminar, usando o mesmo diretório e a mesma configuração.
 
+### Continuar a busca pela Apify
+
+Configure seu token Apify no processo do PowerShell e use o **mesmo** diretório,
+arquivo de queries, país, idioma e `--max-pages` do piloto anterior:
+
+```powershell
+$env:APIFY_API_TOKEN = [Environment]::GetEnvironmentVariable('APIFY_API_TOKEN', 'User')
+keyword-searcher --provider apify --queries .\queries.txt --run-dir .\runs\pilot --max-pages 2 --max-apify-pages 900
+```
+
+Se o token já estiver disponível no processo, a primeira linha é dispensável.
+Também pode usar outro modo de configurar a variável de ambiente localmente;
+não salve o token no Git. O modo Apify lê resultados orgânicos, em lotes de até
+20 queries, e reaproveita páginas e resoluções já gravadas, inclusive as vindas
+da SerpApi. A contagem `search_requests` continua registrando apenas tentativas
+SerpApi; `apify_pages` conta páginas Apify salvas e `apify_reserved_pages` indica
+o teto de páginas reservado em lotes já iniciados. O limite `--max-apify-pages`
+é cumulativo no diretório, **não é uma garantia de preço**. Cada execução do
+Actor também recebe um teto de US$ 1 por padrão, alterável com
+`--apify-run-cost-limit-usd`. Opcionalmente, ajuste `--apify-batch-size`.
+
+Se o comando for interrompido durante uma execução Apify confirmada, repita-o:
+ele consulta o ID do Actor gravado no banco e recupera o mesmo dataset. Se a
+requisição de criação foi enviada, mas sua resposta se perdeu, a ferramenta
+interrompe com `Apify batch is unconfirmed`: confira a aba Runs no console Apify
+e vincule o ID encontrado com `--apify-recover-run-id ID` no mesmo comando. Ela
+não cria outro lote por conta própria nesse caso. Não execute dois processos
+no mesmo diretório de execução. O modo Apify não aceita `--location` (o parâmetro
+de localização da SerpApi não tem conversão direta).
+Se o Actor terminou sem dados utilizáveis, confira o run no console e use
+`--apify-abandon-batch` para permitir uma nova tentativa. Isso não devolve
+créditos gastos nem reduz `apify_reserved_pages`.
+
+O token Apify não altera o limite de chamadas SerpApi. Os complementos pagos de
+conteúdo de sites, anúncios, leads e respostas de IA ficam desativados. O
+resolvedor local continua sendo responsável por selecionar as empresas.
+
 Durante a execução, o terminal interativo mostra barras coloridas de queries,
 páginas da query atual e links da página atual, além da operação em andamento e
 do tempo decorrido. A barra de páginas indica uso do limite configurado, não

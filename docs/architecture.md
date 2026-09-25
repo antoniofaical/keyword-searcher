@@ -13,6 +13,7 @@ diretórios e comparativos não alimentam descoberta indireta.
 | `models.py` | Contratos `SearchProvider`, `EntrypointResolver` e modelos |
 | `cli.py` | Configuração, composição de dependências e códigos de saída |
 | `search.py` | Adaptador SerpApi, retries e interpretação de paginação |
+| `apify.py` | Busca Apify em lotes, recuperação do Actor, importação dos resultados orgânicos |
 | `http.py` | HTTP com timeout, tamanho e redirecionamentos limitados |
 | `urls.py` | Normalização e rejeição de destinos privados conhecidos via DNS |
 | `resolve.py` | Inspeção limitada de identidade e seleção do entrypoint |
@@ -20,15 +21,16 @@ diretórios e comparativos não alimentam descoberta indireta.
 | `pipeline.py` | Iteração e retomada, sem dependência de um fornecedor concreto |
 
 O transporte e as dependências são injetados; não é necessário consultar a rede
-para testar contratos e falhas. Trocar o provedor requer um novo adaptador e sua
-seleção na composição da CLI. A primeira versão tem execução sequencial: uma
-requisição simultânea. Não foram introduzidos serviços, filas ou microserviços.
+para testar contratos e falhas. A busca Apify aceita várias queries por Actor;
+os resultados de ambas as fontes alimentam a mesma resolução local.
 
 ## Persistência
 
-Cada diretório representa uma execução e fixa sua configuração. A chave local de
-uma página é `(query, start)` dentro desse contexto, que inclui fornecedor, idioma,
-país, localização e versão. As respostas do provedor são preservadas com a chave
+Cada diretório representa uma execução e fixa suas queries, idioma, país,
+localização, profundidade e versão. Por compatibilidade com execuções anteriores,
+o campo `provider` da configuração permanece com o valor legado `serpapi-google`:
+o provedor efetivo de uma página Apify é registrado no próprio payload. A chave
+local de uma página é `(query, start)` dentro desse contexto. As respostas são preservadas com a chave
 substituída por `[REDACTED]`. A resolução armazena nome, URL, motivo e evidência
 extraída; HTML completo não é arquivado. Revalidar uma identidade exige revisitar
 o site. A busca é salva antes da resolução; cada resolução é salva individualmente.
@@ -36,6 +38,10 @@ o site. A busca é salva antes da resolução; cada resolução é salva individ
 Chamadas são reservadas numa transação antes do envio. Esse contador é um teto
 operacional de tentativas, não uma estimativa monetária. É possível que conte uma
 tentativa que não chegou ao provedor. Não há promessa de exactly-once na rede.
+Lotes Apify reservam antecipadamente o máximo de páginas, persistem o ID do Actor
+e permitem retomada sem nova execução paga. Se a criação ficar incerta, a
+retomada para até receber explicitamente o ID da execução. A reserva de páginas
+é conservadora e não equivale a uma cobrança real.
 
 CSV e relatórios são regeneráveis a partir do SQLite. Exportações usam arquivo
 temporário e `os.replace`; não há transação conjunta entre os três arquivos.
