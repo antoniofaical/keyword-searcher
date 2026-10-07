@@ -7,6 +7,7 @@ from .models import BudgetExceeded, DiscoveryError
 def run(queries, provider, resolver, store, max_pages, retry_pending=False, progress=None):
     store.ensure_queries(queries)
     budget_exhausted = False
+    budget_reason = "apify_page_limit"
     for query_index, query in enumerate(queries, start=1):
         if budget_exhausted and store.page(query, 0) is None:
             continue
@@ -21,7 +22,7 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
                 payload = store.page(query, start)
                 if budget_exhausted and payload is None:
                     status = "incomplete" if page_index else "not_started"
-                    store.progress(query, status, "search_request_limit")
+                    store.progress(query, status, budget_reason)
                     break
                 if progress:
                     progress.begin_page(page_index + 1, payload is not None)
@@ -50,8 +51,8 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
                     if progress:
                         progress.end_result(cached)
                 if page.next_start is None:
-                    status = "complete"
-                    store.progress(query, status)
+                    status = page.end_status
+                    store.progress(query, status, page.end_reason)
                     break
                 if not page.results:
                     status = "incomplete"
@@ -61,15 +62,14 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
             else:
                 status = "limited"
                 store.progress(query, status, "max_pages")
-        except BudgetExceeded:
+        except BudgetExceeded as exc:
             budget_exhausted = True
+            budget_reason = str(exc)
             status = "incomplete" if store.page(query, 0) is not None else "not_started"
             store.progress(
                 query,
                 status,
-                "apify_page_limit"
-                if provider.__class__.__name__ == "ApifyGoogle"
-                else "search_request_limit",
+                budget_reason,
             )
             # Other queries can still be processed entirely from stored responses.
             continue
@@ -77,6 +77,7 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
             store.progress(query, status, "apify_run_needs_recovery")
             raise
         except DiscoveryError as exc:
+            status = "incomplete" if store.page(query, 0) is not None else "failed"
             store.progress(query, status, str(exc))
         except KeyboardInterrupt:
             status = "interrupted"

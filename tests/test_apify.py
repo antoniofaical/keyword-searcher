@@ -9,6 +9,19 @@ from keyword_searcher.pipeline import run
 from keyword_searcher.store import Store
 
 
+def completed(records=1):
+    return {
+        "run_id": "run123",
+        "dataset_id": "dataset123",
+        "status": "SUCCEEDED",
+        "exit_code": 0,
+        "cost_usd": 0.01,
+        "cost_limit_usd": 1,
+        "pending_requests": 0,
+        "handled_requests": records,
+    }
+
+
 def record(query, page=1, count=2):
     return {
         "searchQuery": {"term": query, "page": page},
@@ -29,8 +42,9 @@ def test_apify_batch_reuses_serpapi_pages_and_exports(tmp_path):
     queries = ["old", "new", "later"]
     transport = Mock()
     transport.start.return_value = "run123"
-    transport.completed.return_value = "dataset123"
+    transport.completed.return_value = completed()
     transport.items.return_value = [record("new"), record("later")]
+    transport.completed.return_value = completed(2)
     store, provider = setup(tmp_path, queries, transport)
     store.save_page(
         "old",
@@ -61,7 +75,7 @@ def test_apify_batch_reuses_serpapi_pages_and_exports(tmp_path):
 def test_apify_resumes_existing_run_without_starting_another(tmp_path):
     transport = Mock()
     transport.start.return_value = "run123"
-    transport.completed.side_effect = [ApifyRecoveryRequired("temporary"), "dataset123"]
+    transport.completed.side_effect = [ApifyRecoveryRequired("temporary"), completed()]
     transport.items.return_value = [record("q")]
     store, provider = setup(tmp_path, ["q"], transport)
     with pytest.raises(ApifyRecoveryRequired):
@@ -83,7 +97,7 @@ def test_unconfirmed_start_requires_manual_run_id(tmp_path):
     with pytest.raises(ApifyRecoveryRequired, match="unconfirmed"):
         provider.search("q", 0)
     assert transport.start.call_count == 1
-    transport.completed.return_value = "dataset123"
+    transport.completed.return_value = completed()
     transport.items.return_value = [record("q")]
     store.apify_recover_run("run123")
     assert provider.search("q", 0)["provider"] == "apify-google"
@@ -93,7 +107,7 @@ def test_unconfirmed_start_requires_manual_run_id(tmp_path):
 def test_apify_page_budget_is_cumulative(tmp_path):
     transport = Mock()
     transport.start.return_value = "run123"
-    transport.completed.return_value = "dataset123"
+    transport.completed.return_value = completed()
     transport.items.return_value = [record("first")]
     store, provider = setup(tmp_path, ["first", "second"], transport, limit=2, batch_size=1)
     provider.search("first", 0)
@@ -102,10 +116,22 @@ def test_apify_page_budget_is_cumulative(tmp_path):
     store.close()
 
 
+def test_small_budget_fits_a_smaller_batch(tmp_path):
+    transport = Mock()
+    transport.start.return_value = "run123"
+    transport.completed.return_value = completed()
+    transport.items.return_value = [record("first")]
+    store, provider = setup(tmp_path, ["first", "second"], transport, limit=2)
+    provider.search("first", 0)
+    assert transport.start.call_args.args[0] == ["first"]
+    assert store.apify_reserved_pages() == 2
+    store.close()
+
+
 def test_missing_query_does_not_silently_launch_another_actor(tmp_path):
     transport = Mock()
     transport.start.return_value = "run123"
-    transport.completed.return_value = "dataset123"
+    transport.completed.return_value = completed()
     transport.items.return_value = [record("first")]
     store, provider = setup(tmp_path, ["first", "second"], transport)
     with pytest.raises(ApifyRecoveryRequired, match="omitted"):
@@ -118,8 +144,9 @@ def test_missing_query_does_not_silently_launch_another_actor(tmp_path):
 def test_apify_pagination_and_validation(tmp_path):
     transport = Mock()
     transport.start.return_value = "run123"
-    transport.completed.return_value = "dataset123"
+    transport.completed.return_value = completed()
     transport.items.return_value = [record("q", 1, 10), record("q", 2, 3)]
+    transport.completed.return_value = completed(2)
     store, provider = setup(tmp_path, ["q"], transport)
     assert provider.parse(provider.search("q", 0), 0).next_start == 10
     assert provider.parse(store.page("q", 10), 10).next_start is None

@@ -9,7 +9,7 @@ from keyword_searcher.http import Response
 from keyword_searcher.models import BudgetExceeded, DiscoveryError, Resolution, SearchResult
 from keyword_searcher.pipeline import recheck_sites, run
 from keyword_searcher.resolve import WebsiteResolver
-from keyword_searcher.search import SerpApi
+from keyword_searcher.search import parse_legacy
 from keyword_searcher.store import Store
 from keyword_searcher.urls import normalize_url, require_public_url
 
@@ -184,65 +184,28 @@ def test_mismatched_home_identity():
     assert result.reason == "entrypoint_identity_mismatch"
 
 
-def test_provider_exact_query_and_redaction():
-    client = Mock()
-    data = payload(["https://example.org"])
-    data["search_parameters"] = {"api_key": "secret123"}
-    client.get.return_value = Response("", 200, json.dumps(data), "application/json")
-    reserve = Mock()
-    provider = SerpApi(client, "secret123", "br", "pt", "", reserve)
-    result = provider.search('"inventory" OR estoque -jobs', 10)
-    from urllib.parse import parse_qs, urlsplit
-
-    params = parse_qs(urlsplit(client.get.call_args.args[0]).query)
-    assert params["q"] == ['"inventory" OR estoque -jobs']
-    assert params["start"] == ["10"]
-    assert "secret123" not in json.dumps(result)
-    reserve.assert_called_once()
-
-
-def test_provider_retries_count_against_budget(monkeypatch):
-    monkeypatch.setattr("keyword_searcher.search.time.sleep", lambda _: None)
-    client = Mock()
-    client.get.side_effect = [
-        Response("", 429, "", ""),
-        Response("", 200, json.dumps(payload()), ""),
-    ]
-    reserve = Mock()
-    assert SerpApi(client, "secret", "br", "pt", "", reserve).search("q", 0)
-    assert reserve.call_count == 2
-
-
-def test_provider_auth_error_no_retry():
-    client = Mock()
-    client.get.return_value = Response("", 401, "secret", "")
-    with pytest.raises(DiscoveryError, match="provider_http_401"):
-        SerpApi(client, "secret", "br", "pt", "", Mock()).search("q", 0)
-    assert client.get.call_count == 1
-
-
 def test_parse_empty_vs_malformed():
-    assert SerpApi.parse(payload(), 0).results == []
+    assert parse_legacy(payload(), 0).results == []
     data = {
         "search_metadata": {"status": "Success"},
         "search_information": {"organic_results_state": "Fully empty"},
         "error": "no results",
     }
-    assert SerpApi.parse(data, 0).results == []
+    assert parse_legacy(data, 0).results == []
     with pytest.raises(DiscoveryError):
-        SerpApi.parse({"search_metadata": {"status": "Success"}}, 0)
+        parse_legacy({"search_metadata": {"status": "Success"}}, 0)
 
 
 def test_pagination_metadata():
-    assert SerpApi.parse(payload(["https://example.org"], 17), 0).next_start == 17
+    assert parse_legacy(payload(["https://example.org"], 17), 0).next_start == 17
     with pytest.raises(DiscoveryError):
-        SerpApi.parse(payload(["https://example.org"], 0), 0)
+        parse_legacy(payload(["https://example.org"], 0), 0)
 
 
 def test_pipeline_resume_csv_and_provenance(tmp_path):
     store = Store(tmp_path / "state.sqlite", {})
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     provider.search.side_effect = [
         payload(["https://example.org/p", "https://example.org/q"]),
         payload(["https://example.org/p"]),
@@ -285,7 +248,7 @@ def test_config_change_rejected(tmp_path):
 def test_repeated_results_not_complete(tmp_path):
     store = Store(tmp_path / "state.sqlite", {})
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     provider.search.side_effect = [
         payload(["https://example.org"], 10),
         payload(["https://example.org"], 20),
@@ -301,7 +264,7 @@ def test_repeated_results_not_complete(tmp_path):
 def test_interrupt_keeps_search_for_resume(tmp_path):
     store = Store(tmp_path / "state.sqlite", {})
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     provider.search.return_value = payload(["https://example.org"])
     resolver = Mock()
     resolver.resolve.side_effect = KeyboardInterrupt()
@@ -318,7 +281,7 @@ def test_interrupt_keeps_search_for_resume(tmp_path):
 def test_limits_distinct_from_complete(tmp_path):
     store = Store(tmp_path / "state.sqlite", {})
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     provider.search.return_value = payload(["https://example.org"], 10)
     resolver = Mock()
     resolver.resolve.return_value = Resolution("pending")
@@ -334,11 +297,23 @@ def test_queries_bom_unicode_and_duplicates(tmp_path):
 
 
 def test_cli_missing_key_reports_failure_not_empty_success(tmp_path, monkeypatch):
-    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
+    monkeypatch.delenv("APIFY_API_TOKEN", raising=False)
     q = tmp_path / "q.txt"
     q.write_text("inventory")
-    assert main(["--queries", str(q), "--run-dir", str(tmp_path / "run")]) == 2
-    report = json.loads((tmp_path / "run/report.json").read_text())
+    assert (
+        main(
+            [
+                "--queries",
+                str(q),
+                "--run-dir",
+                str(tmp_path / "run"),
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
+        == 2
+    )
+    report = json.loads((tmp_path / "output/report.json").read_text())
     assert report["queries"][0]["status"] == "failed"
     assert report["search_requests"] == 0
 
@@ -347,7 +322,7 @@ def test_budget_does_not_skip_later_cached_query(tmp_path):
     store = Store(tmp_path / "state.sqlite", {})
     store.save_page("cached", 0, payload())
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     provider.search.side_effect = BudgetExceeded("search_request_limit")
     run(["uncached", "cached"], provider, Mock(), store, 3)
     report = store.export(tmp_path)
@@ -362,7 +337,7 @@ def test_budget_marks_untouched_queries_and_repairs_legacy_status(tmp_path):
     store.progress("untouched", "incomplete", "search_request_limit")
     store.ensure_queries(["partial", "untouched", "never_attempted"])
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     provider.search.side_effect = BudgetExceeded("search_request_limit")
     run(["partial", "untouched", "never_attempted"], provider, Mock(), store, 2)
     statuses = {q["query"]: q["status"] for q in store.export(tmp_path)["queries"]}
@@ -380,7 +355,7 @@ def test_recheck_saved_pages_without_search_requests(tmp_path):
     store.save_page("q", 0, payload(["https://example.org/product"]))
     store.save_resolution("q", "https://example.org/product", Resolution("pending"))
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     resolver = Mock()
     resolver.resolve.return_value = Resolution("confirmed", "Example", "https://example.org/")
     before = store.requests()
@@ -396,7 +371,7 @@ def test_retry_pending_reuses_search(tmp_path):
     store.save_page("q", 0, payload(["https://example.org"]))
     store.save_resolution("q", "https://example.org", Resolution("pending"))
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     resolver = Mock()
     resolver.resolve.return_value = Resolution("confirmed", "Example", "https://example.org/")
     run(["q"], provider, resolver, store, 3, retry_pending=True)
@@ -416,30 +391,7 @@ def test_retry_pending_reuses_search(tmp_path):
 )
 def test_malformed_provider_response_is_expected_failure(data):
     with pytest.raises(DiscoveryError):
-        SerpApi.parse(data, 0)
-
-
-def test_cli_end_to_end_with_synthetic_transport(tmp_path, monkeypatch):
-    queries = tmp_path / "q.txt"
-    queries.write_text('"estoque"\ninventory', encoding="utf-8")
-    client = Mock()
-    client.get.side_effect = [
-        Response("", 200, json.dumps(payload(["https://example.org/product"])), "application/json"),
-        web(html(), "https://example.org/product"),
-        web(html()),
-        Response("", 200, json.dumps(payload(["https://example.org/"])), "application/json"),
-        web(html()),
-    ]
-    monkeypatch.setattr("keyword_searcher.cli.HttpClient", lambda: client)
-    monkeypatch.setenv("SERPAPI_API_KEY", "fake-test-key")
-    args = ["--queries", str(queries), "--run-dir", str(tmp_path / "run")]
-    assert main(args) == 0
-    calls = client.get.call_count
-    assert main(args) == 0
-    assert client.get.call_count == calls
-    report = json.loads((tmp_path / "run/report.json").read_text())
-    assert report["search_requests"] == 2
-    assert report["exported_rows"] == 2
+        parse_legacy(data, 0)
 
 
 def test_http_redirect_checks_each_destination(monkeypatch):
@@ -475,7 +427,7 @@ def test_progress_counts_saved_results_and_incomplete_queries(tmp_path):
         "cached", "https://example.org/", Resolution("confirmed", "Example", "https://example.org/")
     )
     provider = Mock()
-    provider.parse = SerpApi.parse
+    provider.parse = parse_legacy
     provider.search.side_effect = BudgetExceeded("search_request_limit")
     stream = StringIO()
     with TerminalProgress(2, 2, stream=stream) as display:
