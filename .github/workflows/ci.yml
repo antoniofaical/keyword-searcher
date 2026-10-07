@@ -17,8 +17,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e ".[dev]"
-      - run: python -m ruff check .
-      - run: python -m ruff format --check .
-      - run: python -m pytest -q
-      - run: python -m keyword_searcher --help
+      - name: Bootstrap PowerShell (clean and repeated)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE 'bootstrap.ps1'
+          Set-Location $env:RUNNER_TEMP
+          & $script -PythonExecutable (Get-Command python).Source
+          & $script
+      - name: Bootstrap Bash (clean and repeated)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          bash "$GITHUB_WORKSPACE/bootstrap.sh" "$(command -v python)"
+          bash "$GITHUB_WORKSPACE/bootstrap.sh"
