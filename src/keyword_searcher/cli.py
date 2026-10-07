@@ -2,16 +2,17 @@ import argparse
 import json
 import math
 import os
+import sqlite3
 from pathlib import Path
 
 from . import __version__
 from .apify import ApifyGoogle, ApifyTransport
+from .export import export_results, output_directory
 from .http import HttpClient
 from .models import DiscoveryError
 from .pipeline import recheck_sites, run
 from .progress import TerminalProgress
 from .resolve import WebsiteResolver
-from .search import SerpApi
 from .store import Store
 
 
@@ -45,14 +46,11 @@ def main(argv=None):
         "--queries", required=True, type=Path, help="UTF-8 text, one query per line"
     )
     parser.add_argument("--run-dir", required=True, type=Path)
-    parser.add_argument("--provider", choices=["serpapi", "apify"], default="serpapi")
-    parser.add_argument("--max-pages", type=positive, default=3)
     parser.add_argument(
-        "--max-search-requests",
-        type=positive,
-        default=20,
-        help="Cumulative API attempt ceiling for this run, including retries",
+        "--output-dir", required=True, type=Path, help="CSV/JSON destination outside the repository"
     )
+    parser.add_argument("--provider", choices=["apify"], default="apify")
+    parser.add_argument("--max-pages", type=positive, default=3)
     parser.add_argument("--country", default="br")
     parser.add_argument("--language", default="pt")
     parser.add_argument("--location", default="")
@@ -89,20 +87,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     store = None
     try:
+        args.output_dir = output_directory(args.output_dir)
+        args.run_dir = args.run_dir.expanduser().resolve()
         queries = read_queries(args.queries)
         if not queries:
             raise DiscoveryError("The queries file is empty")
-        if args.provider == "apify" and args.location:
-            raise DiscoveryError("Apify does not support --location; use a run without it")
-        if args.apify_recover_run_id and args.provider != "apify":
-            raise DiscoveryError("--apify-recover-run-id requires --provider apify")
-        if args.apify_abandon_batch and args.provider != "apify":
-            raise DiscoveryError("--apify-abandon-batch requires --provider apify")
         if args.apify_abandon_batch and args.apify_recover_run_id:
             raise DiscoveryError("Choose either --apify-abandon-batch or --apify-recover-run-id")
         config = dict(
             version=__version__,
-            provider="serpapi-google",
+            provider="apify-google",
             queries=queries,
             country=args.country,
             language=args.language,
@@ -116,29 +110,19 @@ def main(argv=None):
         if args.apify_abandon_batch:
             store.apify_abandon_batch()
         http = HttpClient()
-        serpapi = SerpApi(
-            http,
-            os.environ.get("SERPAPI_API_KEY", ""),
+        provider = ApifyGoogle(
+            ApifyTransport(os.environ.get("APIFY_API_TOKEN", "")),
+            store,
+            queries,
             args.country,
             args.language,
-            args.location,
-            lambda: store.reserve(args.max_search_requests),
+            args.max_pages,
+            args.max_apify_pages,
+            args.apify_batch_size,
+            args.apify_run_cost_limit_usd,
         )
-        provider = (
-            ApifyGoogle(
-                ApifyTransport(os.environ.get("APIFY_API_TOKEN", "")),
-                store,
-                queries,
-                args.country,
-                args.language,
-                args.max_pages,
-                args.max_apify_pages,
-                args.apify_batch_size,
-                args.apify_run_cost_limit_usd,
-            )
-            if args.provider == "apify"
-            else serpapi
-        )
+        if args.location and not args.recheck_sites:
+            raise DiscoveryError("Apify does not support --location; cached recheck is available")
         interrupted = False
         try:
             visible_queries = (
@@ -163,7 +147,7 @@ def main(argv=None):
         except KeyboardInterrupt:
             interrupted = True
         finally:
-            report = store.export(args.run_dir)
+            report = export_results(store, args.output_dir)
         print(
             json.dumps(
                 {key: value for key, value in report.items() if key != "queries"},
@@ -171,12 +155,13 @@ def main(argv=None):
                 indent=2,
             )
         )
-        print(f"Detailed coverage: {args.run_dir / 'report.json'}")
+        print(f"State: {args.run_dir / 'state.sqlite'}")
+        print(f"Detailed coverage: {args.output_dir / 'report.json'}")
         if interrupted:
             return 130
         incomplete = any(q["status"] != "complete" for q in report["queries"])
         return 2 if incomplete or report["pending"] else 0
-    except (DiscoveryError, OSError) as exc:
+    except (DiscoveryError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f"Error: {exc}\n")
     finally:
         if store:

@@ -1,9 +1,7 @@
-import csv
 import json
-import os
 import sqlite3
-from collections import Counter
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import BudgetExceeded, DiscoveryError, Resolution
@@ -31,12 +29,58 @@ class Store:
         """)
         encoded = json.dumps(config, sort_keys=True, ensure_ascii=False)
         previous = self.db.execute("SELECT value FROM meta WHERE key='config'").fetchone()
-        if previous and previous[0] != encoded:
+        schema = self.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        try:
+            if schema and schema[0] != "2":
+                raise DiscoveryError("Unsupported state schema; use a compatible tool version")
+            if previous:
+                try:
+                    old = json.loads(previous[0])
+                except ValueError as exc:
+                    raise DiscoveryError("Invalid stored run configuration") from exc
+                if not isinstance(old, dict):
+                    raise DiscoveryError("Invalid stored run configuration")
+                if old.get("provider") not in (None, "serpapi-google", "apify-google"):
+                    raise DiscoveryError("Unsupported legacy provider")
+                if not schema and old.get("version") not in (None, "0.1.0"):
+                    raise DiscoveryError("Unsupported legacy tool version")
+
+                def semantic(data):
+                    return {k: v for k, v in data.items() if k not in {"version", "provider"}}
+
+                if semantic(old) != semantic(config):
+                    raise DiscoveryError("Run configuration differs; use a new --run-dir")
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.db.execute("""CREATE TABLE IF NOT EXISTS apify_coverage (
+                    query TEXT PRIMARY KEY, batch_id INTEGER NOT NULL, payload TEXT NOT NULL)""")
+                self.db.execute("""CREATE TABLE IF NOT EXISTS apify_run_results (
+                    batch_id INTEGER PRIMARY KEY, payload TEXT NOT NULL)""")
+                if previous and not schema:
+                    self.db.execute("INSERT INTO meta VALUES ('legacy_config', ?)", (previous[0],))
+                    self.db.execute(
+                        "INSERT INTO meta VALUES ('migration', ?)",
+                        (
+                            json.dumps(
+                                {
+                                    "from": 1,
+                                    "to": 2,
+                                    "reason": "Apify-only searches; preserve legacy pages, IDs and counters",
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                    "effects": [
+                                        "provider=apify-google",
+                                        "schema version separate from software",
+                                    ],
+                                }
+                            ),
+                        ),
+                    )
+                self.db.execute("INSERT OR REPLACE INTO meta VALUES ('config', ?)", (encoded,))
+                self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', '2')")
+                self.db.execute("INSERT OR IGNORE INTO meta VALUES ('requests', '0')")
+        except BaseException:
             self.db.close()
-            raise DiscoveryError("Run configuration differs; use a new --run-dir")
-        with self.db:
-            self.db.execute("INSERT OR IGNORE INTO meta VALUES ('config', ?)", (encoded,))
-            self.db.execute("INSERT OR IGNORE INTO meta VALUES ('requests', '0')")
+            raise
 
     def close(self):
         self.db.close()
@@ -109,6 +153,31 @@ class Store:
         with self.db:
             self.db.execute("UPDATE apify_batches SET status='done' WHERE id=?", (batch_id,))
 
+    def apify_import_batch(self, batch_id, pages, coverage, run_info):
+        """Commit a validated dataset and its terminal coverage together."""
+        with self.db:
+            for query, start, payload in pages:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO pages VALUES (?, ?, ?)",
+                    (query, start, json.dumps(payload, ensure_ascii=False)),
+                )
+            for query, summary in coverage.items():
+                self.db.execute(
+                    "INSERT OR REPLACE INTO apify_coverage VALUES (?, ?, ?)",
+                    (query, batch_id, json.dumps(summary)),
+                )
+            self.db.execute(
+                "INSERT OR REPLACE INTO apify_run_results VALUES (?, ?)",
+                (batch_id, json.dumps(run_info)),
+            )
+            self.db.execute("UPDATE apify_batches SET status='done' WHERE id=?", (batch_id,))
+
+    def apify_query_coverage(self, query):
+        row = self.db.execute(
+            "SELECT payload FROM apify_coverage WHERE query=?", (query,)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
     def apify_abandon_batch(self):
         batch = self.apify_open_batch()
         if not batch:
@@ -170,44 +239,41 @@ class Store:
             "SELECT start, payload FROM pages WHERE query=? ORDER BY start", (query,)
         ).fetchall()
 
-    def export(self, directory):
-        directory = Path(directory)
-        temp = directory / "companies.csv.tmp"
-        seen = set()
-        pending = []
-        with temp.open("w", encoding="utf-8-sig", newline="") as file:
-            writer = csv.writer(file, delimiter=";")
-            writer.writerow(["CompanyName", "URL", "SearchQuery"])
-            for query, source, raw in self.db.execute(
-                "SELECT query, discovered_url, payload FROM resolutions ORDER BY query, discovered_url"
-            ):
-                item = Resolution(**json.loads(raw))
-                if item.status == "confirmed":
-                    key = (item.url, query)
-                    if key not in seen:
-                        writer.writerow([item.name, item.url, query])
-                        seen.add(key)
-                else:
-                    pending.append(dict(query=query, discovered_url=source, **asdict(item)))
-        os.replace(temp, directory / "companies.csv")
-        statuses = [
+    def export_resolutions(self):
+        for query, source, raw in self.db.execute(
+            "SELECT query, discovered_url, payload FROM resolutions ORDER BY query, discovered_url"
+        ):
+            yield query, source, Resolution(**json.loads(raw))
+
+    def export_progress(self):
+        return [
             dict(query=q, status=s, reason=r)
             for q, s, r in self.db.execute(
                 "SELECT query, status, reason FROM progress ORDER BY query"
             )
         ]
-        report = dict(
+
+    def export_metadata(self):
+        return dict(
             search_requests=self.requests(),
             apify_pages=self.apify_pages(),
             apify_reserved_pages=self.apify_reserved_pages(),
-            exported_rows=len(seen),
-            query_status_counts=dict(Counter(q["status"] for q in statuses)),
-            queries=statuses,
-            pending=sum(x["status"] == "pending" for x in pending),
-            skipped=sum(x["status"] == "skipped" for x in pending),
+            apify_coverage={
+                q: json.loads(raw)
+                for q, raw in self.db.execute(
+                    "SELECT query, payload FROM apify_coverage ORDER BY query"
+                )
+            },
+            apify_runs=[
+                json.loads(raw)
+                for (raw,) in self.db.execute(
+                    "SELECT payload FROM apify_run_results ORDER BY batch_id"
+                )
+            ],
         )
-        for name, data in [("report.json", report), ("pending.json", pending)]:
-            temp = directory / (name + ".tmp")
-            temp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(temp, directory / name)
-        return report
+
+    def export(self, directory):
+        """Compatibility wrapper: all file writing belongs to export.py."""
+        from .export import export_results
+
+        return export_results(self, directory)

@@ -21,6 +21,8 @@ class SearchResult:
 class SearchPage:
     results: list[SearchResult]
     next_start: int | None
+    end_status: str = "complete"
+    end_reason: str = ""
 
 
 @dataclass(frozen=True)
