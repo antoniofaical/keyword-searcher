@@ -17,11 +17,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Copy checkout to a path with spaces
+        run: python -c "import os, pathlib, shutil; shutil.copytree(os.environ['GITHUB_WORKSPACE'], pathlib.Path(os.environ['RUNNER_TEMP']) / 'keyword searcher', ignore=shutil.ignore_patterns('.git', '.venv'))"
       - name: Bootstrap PowerShell (clean and repeated)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $script = Join-Path $env:GITHUB_WORKSPACE 'bootstrap.ps1'
+          $script = Join-Path $env:RUNNER_TEMP 'keyword searcher/bootstrap.ps1'
           Set-Location $env:RUNNER_TEMP
           & $script -PythonExecutable (Get-Command python).Source
           & $script
@@ -30,5 +32,5 @@ jobs:
         shell: bash
         run: |
           cd "$RUNNER_TEMP"
-          bash "$GITHUB_WORKSPACE/bootstrap.sh" "$(command -v python)"
-          bash "$GITHUB_WORKSPACE/bootstrap.sh"
+          bash "$RUNNER_TEMP/keyword searcher/bootstrap.sh" "$(command -v python)"
+          bash "$RUNNER_TEMP/keyword searcher/bootstrap.sh"
