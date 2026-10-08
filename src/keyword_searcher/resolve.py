@@ -44,6 +44,7 @@ ORG_TYPES = {
     "MedicalBusiness",
 }
 EDITORIAL_TYPES = {"NewsArticle", "Article", "BlogPosting", "Review", "ItemList"}
+NON_INSTITUTIONAL_REASONS = {"non_institutional_source", "editorial_or_listing_page"}
 
 
 def nodes(soup):
@@ -214,4 +215,6 @@ class WebsiteResolver:
                 else "missing_or_ambiguous_company_identity",
             )
         except DiscoveryError as exc:
-            return Resolution("pending", reason=str(exc))
+            reason = str(exc)
+            status = "skipped" if reason in NON_INSTITUTIONAL_REASONS else "pending"
+            return Resolution(status, reason=reason)
