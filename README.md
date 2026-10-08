@@ -176,26 +176,74 @@ preservados; fragmentos e parâmetros conhecidos de rastreamento são removidos.
 ## O que significa confirmado nesta versão
 
 A resolução é **heurística e conservadora**, baseada na identidade declarada
-pelo próprio site (JSON-LD `Organization`/`WebSite` ou `og:site_name` na home).
+pelo próprio site e em sinais de oferta própria de produtos ou serviços.
 O nome não é adivinhado a partir do domínio ou do título de busca.
 
-1. Inspeciona a página encontrada, exceto fontes intermediárias reconhecidas e
-   caminhos editoriais identificados.
-2. Procura uma única organização com nome e URL no mesmo host (aceitando `www`).
+1. Classifica plataformas reconhecidas de publicação, pesquisa, financiamento e
+   diretórios antes de acessá-las. Um domínio `.org` ou `.edu` não é veto.
+2. Inspeciona a página encontrada. Marcação `Article`, `Review` ou `ItemList` e
+   caminho de blog não descartam automaticamente um fornecedor com home própria.
 3. Verifica a home do mesmo host ou um link explícito de home/logo; um URL de
    produto que declara a si mesmo não se torna automaticamente um entrypoint.
-4. Compara a identidade da home com a declarada na página encontrada, se houver.
-5. Exporta o endereço final após redirecionamentos. Ausência ou conflito de
-   evidências produz pendência, nunca um nome inventado.
+4. Compara `Organization`, `WebSite`, `og:site_name` e copyright. Conflitos entre
+   marca e agência geram pendência. Sufixos jurídicos usuais e `alternateName`
+   explícito permitem comparar nomes sem consolidar marcas por domínio.
+5. Na ausência de metadata, exige concordância entre contextos diferentes:
+   título, logo, copyright ou autodescrição visível. Pode consultar uma página
+   institucional About/contato do mesmo host para apoiar a identidade da home.
+6. Exige sinais de oferta própria, como menu de produtos/serviços no mesmo host,
+   planos de assinatura ou solicitação de demonstração. Pesquisa acadêmica,
+   publicação ou identidade isolada não bastam. Um instituto com serviços
+   próprios pode ser confirmado; isso não afirma que seja startup ou empresa privada.
+7. Exporta o endereço institucional final. Erros funcionais na URL, páginas de
+   login, bloqueio e desafios ficam pendentes, mesmo com metadata de marca.
 
-As páginas inspecionadas por resultado são limitadas à origem, home declarada,
-link explícito de home/logo e raiz do host. Não há crawling recursivo ou execução
+As páginas inspecionadas por resultado são limitadas a cinco, incluindo origem,
+homes e uma página de apoio por home, dentro desse limite. Um cache de até 128
+páginas/erros e 8 MiB de conteúdo HTML evita repetir acessos na mesma execução
+(o HTML analisado ocupa memória adicional). Não há crawling recursivo ou execução
 de JavaScript. Sites dependentes de JavaScript, sem identidade verificável na
 home, protegidos por CAPTCHA ou com identidades complexas
 podem ficar pendentes. Não é uma verificação jurídica da empresa: metadata pode
 estar errada. O reconhecimento de fontes intermediárias também é heurístico;
 diretórios desconhecidos podem produzir falsos positivos. É necessário medir
-precisão e cobertura numa amostra real antes do uso em escala.
+precisão e cobertura numa amostra real antes do uso em escala. Um HTTP 403 na
+página profunda permite tentar a home do mesmo host; a falha original permanece
+na evidência. Não há bypass de CAPTCHA ou autenticação. HTTP 202/203 não são
+tratados como HTML válido; o reconhecimento prévio de PubMed evita confundi-lo
+com fornecedor. Um banner comum de cookies não bloqueia uma página válida.
+
+As decisões registram versão da política, URLs inspecionadas, sinais de identidade,
+oferta e falhas em `Resolution.evidence` no SQLite e em `pending.json` para decisões
+não confirmadas. O CSV mantém exatamente `CompanyName;URL;SearchQuery`.
+
+## Reavaliar o piloto com as novas regras
+
+Com o processo anterior encerrado, execute:
+
+```bash
+python -m keyword_searcher.recheck --run-dir ../keyword-searcher-data/runs/pilot --output-dir ../keyword-searcher-data/rechecks/pilot_v2
+```
+
+A pasta de saída deve ser nova e externa ao repositório. O comando não exige
+queries, token ou repetição das opções da busca. Valida as páginas salvas, faz um
+backup consistente `state-before.sqlite` e reavalia uma cópia `state.sqlite`.
+O banco original permanece intacto. Revisita resultados confirmados, pendentes
+e descartados usando apenas GETs dos sites; não instancia transporte Apify,
+não inicia Actor nem solicita novos resultados do Google.
+
+Gera `companies.csv`, `pending.json`, `report.json`, `recheck_summary.json` e
+`recheck_changes.json`. O último registra decisões anteriores e atuais por
+query/URL. Queries, páginas, progresso, configuração, IDs de runs e reservas são
+copiados sem alterações. Auditorias e campos de revisão humana existentes não
+são sobrescritos. Para continuar usando as novas decisões na CLI principal,
+aponte `--run-dir` para essa nova pasta e conserve as opções originais de busca.
+
+Ctrl+C exporta o estado parcial e retorna 130. Para repetir a reavaliação,
+use a pasta da cópia parcial como `--run-dir` e escolha outra pasta de saída.
+O comando reavalia novamente todos os sites salvos. Código 0 indica que a
+reavaliação terminou, mesmo quando permanecem pendências ou buscas limitadas.
+O banco continua contendo somente a cobertura coletada anteriormente.
 
 O estado `complete` exige evidência de encerramento: run bem-sucedido,
 saída zero, custo abaixo do teto e fila sem pendências, com contagem de requisições
@@ -218,7 +266,9 @@ Resultados ignorados por tipo de fonte não são pendências de resolução.
 
 Na versão 0.2.2, páginas reconhecidas como editoriais ou fontes intermediárias
 recebem `skipped`. Falhas HTTP e identidade ausente continuam `pending`; os
-critérios de identidade e relevância não foram ampliados.
+critérios de identidade e relevância daquela versão não foram ampliados.
+Na 0.2.3, prefira a reavaliação acima para aplicar a política nova; a correção
+offline abaixo só altera o estado de motivos antigos e não reexamina evidências.
 
 Com a execução principal encerrada, gere uma amostra dos resultados salvos:
 
