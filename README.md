@@ -214,6 +214,46 @@ Códigos de saída: `0` sem consultas incompletas nem resoluções pendentes; `2
 limites, falhas ou pendências; `130` interrupção; `1` erro de configuração/arquivo.
 Resultados ignorados por tipo de fonte não são pendências de resolução.
 
+## Auditoria offline e correção de pendências editoriais
+
+Na versão 0.2.2, páginas reconhecidas como editoriais ou fontes intermediárias
+recebem `skipped`. Falhas HTTP e identidade ausente continuam `pending`; os
+critérios de identidade e relevância não foram ampliados.
+
+Com a execução principal encerrada, gere uma amostra dos resultados salvos:
+
+```bash
+python3 -m keyword_searcher.audit --run-dir ../keyword-searcher-data/runs/pilot --output-dir ../keyword-searcher-data/audits/pilot_v1 --sample-size 20
+```
+
+O modo padrão só lê o banco. Para corrigir decisões antigas já marcadas com
+`editorial_or_listing_page` ou `non_institutional_source`, acrescente
+`--reclassify-editorial`. Antes da atualização, a ferramenta cria um backup
+consistente em `state-before.sqlite` na pasta da auditoria. Apenas o estado dessas
+pendências muda para `skipped`; IDs, queries, páginas, reservas, progresso e
+demais decisões são preservados. Esse comando exige banco de esquema 2 e não o migra.
+
+Não há requisições a sites nem ao Apify, e não é necessário token. A pasta de
+auditoria deve ser externa ao repositório e ainda não existir. Para gerar outra
+amostra, escolha outra pasta; isso preserva revisões humanas anteriores.
+
+São selecionadas até 20 URLs por motivo, agrupando queries que encontraram a
+mesma URL e priorizando hosts distintos. O padrão cobre identidade ausente,
+HTTP 403, páginas editoriais, HTTP 203 e fontes intermediárias ainda pendentes.
+`--sample-size` altera o limite por motivo; `--seed` fixa a seleção reproduzível
+(padrão 42). A amostra é diagnóstica, não uma estimativa de prevalência.
+
+`audit_cases.csv` contém IDs estáveis, URLs, queries, títulos/snippets da busca e
+estados antes/depois. `ReviewOutcome` e `ReviewerNotes` ficam vazios para revisão
+humana. `audit_summary.json` informa as contagens e correções. A mesma pasta
+recebe cópias atualizadas de `companies.csv`, `pending.json` e `report.json`;
+as exportações antigas permanecem como estavam.
+
+`audit_bundle.zip` reúne esses cinco arquivos CSV/JSON para revisão. O SQLite e
+seu backup ficam fora do ZIP. Uma auditoria bem-sucedida retorna código 0 mesmo
+quando há pendências, pois esse código informa a geração do pacote, não a
+conclusão da descoberta.
+
 ## Desenvolvimento
 
 ```powershell

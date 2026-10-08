@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.0
+# Arquitetura e contratos — 0.2.2
 
 ## Responsabilidade
 
@@ -20,6 +20,7 @@ normalização de URLs mantêm os critérios da versão anterior.
 | resolve.py | Identidade declarada e seleção limitada do entrypoint |
 | store.py | SQLite, esquema versionado, migração e dados para exportação |
 | export.py | Validação de destino externo e escrita atômica por arquivo |
+| audit.py | Amostra offline, backup e correção explícita de estados editoriais |
 | pipeline.py | Iteração, retomada e rechecagem das páginas salvas |
 
 O transporte é injetável. Testes de contrato usam dados sintéticos e não precisam
@@ -94,6 +95,33 @@ CSV mantém BOM UTF-8, ponto e vírgula, escaping e deduplicação por URL/query
 Cada arquivo é escrito num temporário e substituído com `os.replace`; não há
 transação conjunta entre os três arquivos. O SQLite permite regenerar a saída
 após uma interrupção. Um processo por diretório de estado e por pasta de saída.
+
+## Auditoria e estados de resolução
+
+Fontes reconhecidas pelo resolvedor como `non_institutional_source` ou
+`editorial_or_listing_page` recebem `skipped`, inclusive quando o reconhecimento
+ocorre durante a inspeção do HTML ou após um redirecionamento. Erros de acesso e
+ausência de identidade continuam `pending`. Isso corrige uma inconsistência de
+estado, sem introduzir classificação temática ou identidade por domínio.
+
+`Store.open_existing` usa SQLite em modo `ro` por padrão, sem criar ou migrar
+bancos. O comando offline exige esquema 2 e pasta de saída nova. Com a opção
+explícita de correção, abre em modo `rw`, usa a API de backup do SQLite antes de
+um UPDATE transacional e altera apenas `payload.status` das pendências com os
+dois motivos acima. Os demais campos JSON e tabelas permanecem preservados.
+Execute a auditoria sem outro processo usando o mesmo estado.
+
+A seleção usa motivo/URL como chave, agrega queries, ordena a entrada e aplica
+seed fixa, priorizando hosts distintos em cada estrato. Os IDs dos casos derivam
+de SHA-256 de motivo/URL. Títulos e snippets vêm apenas das páginas armazenadas;
+não há fetch de conteúdo. Os campos de decisão humana são deixados vazios e uma
+pasta existente é rejeitada para evitar sobrescrita de revisões.
+
+As exportações regeneradas vão para a pasta da auditoria. O ZIP contém somente
+CSV/JSON, sem SQLite ou backup. Se a exportação falhar após o UPDATE, o backup
+permanece disponível e a saída pode ser regenerada em outra pasta. A operação
+de banco é atômica; a produção de todos os arquivos não constitui uma transação
+conjunta.
 
 ## Limites deliberados
 
