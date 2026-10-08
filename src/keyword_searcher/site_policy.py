@@ -36,6 +36,10 @@ SOURCE_HOSTS = {
     "findaphd.com": "listing_source",
     "arpa-h.gov": "funding_source",
     "anr.fr": "funding_source",
+    "independent.co.uk": "editorial_source",
+    "artecult.com": "editorial_source",
+    "springernature.com": "editorial_source",
+    "developers.google.com": "documentation_source",
 }
 
 OFFER = re.compile(
@@ -69,14 +73,41 @@ def known_source(url):
     )
 
 
-def visible_text(soup):
+def visible_text(soup, *, exclude=()):
     """Do not treat scripts, templates or structured metadata as visible offers."""
     return " ".join(
         str(text).strip()
         for text in soup.find_all(string=True)
-        if text.parent.name not in {"script", "style", "noscript", "template", "title"}
-        and not any(p.name in {"script", "style", "noscript", "template"} for p in text.parents)
+        if text.parent.name not in {"script", "style", "noscript", "template", "title", *exclude}
+        and not any(
+            p.name in {"script", "style", "noscript", "template", *exclude} for p in text.parents
+        )
+        and not any(
+            re.search(
+                r"cookie-banner|cookie-consent|onetrust|didomi|cmplz",
+                " ".join([p.get("id", ""), *p.get("class", [])]),
+                re.I,
+            )
+            for p in text.parents
+        )
     )
+
+
+def declared_source_kind(soup):
+    """Explicit portal/publishing identity takes precedence over navigation menus."""
+    names = [t.get("content", "") for t in soup.select('meta[property="og:site_name"]')]
+    if soup.title:
+        names.append(soup.title.get_text(" ", strip=True))
+    if any(
+        re.search(
+            r"(?:^|[|])\s*(?:research (?:portal|communities)\b|publication repository\b)", n, re.I
+        )
+        for n in names
+    ):
+        return "research_source"
+    if any(re.search(r"today['’]s headlines|latest breaking news", n, re.I) for n in names):
+        return "editorial_source"
+    return None
 
 
 def own_offer(soup, base):
@@ -85,7 +116,7 @@ def own_offer(soup, base):
     from .models import DiscoveryError
     from .urls import normalize_url, same_host
 
-    text = visible_text(soup)
+    text = visible_text(soup, exclude={"footer", "aside", "blockquote"})
     match = OFFER.search(text)
     if match:
         return match.group(0)
