@@ -1,4 +1,27 @@
-# Validação — versão 0.2.2
+# Validação — versão 0.2.3
+
+## Regras de fonte e identidade — 08/10/2026
+
+- 174 testes passaram localmente em Windows/Python 3.14. Ruff lint e
+  formatação aprovados; instalação editável 0.2.3 e `pip check` aprovados.
+- Regressões sintéticas cobrem artigos próprios, fontes reconhecidas antes do
+  fetch, institutos com serviços, conflitos de marca/agência, aliases explícitos,
+  identidade visível, About do mesmo host, HTTP 403, interstitials, parâmetros
+  funcionais, limite de cinco inspeções e limites de tamanho do cache.
+- A reavaliação em cópia cobre os três estados anteriores, preservação byte a
+  byte do original, backup consistente, tabelas de busca/IDs/progresso intactas,
+  ausência de transporte Apify, recusa de saída existente e interrupção recuperável.
+- Também foram reavaliados offline 13 HTMLs públicos capturados na investigação
+  do piloto, sem novas requisições. Os 12 casos de seis fornecedores resolveram
+  para suas homes; Organoid Grid ficou pendente por conflito com identidade de
+  agência. São exemplos selecionados para regressão, não estimativa de precisão.
+- A auditoria recebida confirmou 67 linhas/43 hosts, 71 casos, 364 pendências e
+  419 descartes. O ZIP não contém SQLite ou HTML histórico. As regras novas
+  ainda precisam ser aplicadas ao banco completo do VPS e revisadas pelo usuário.
+
+As escolhas e seus limites estão em [política de resolução](resolver-policy.md).
+O status remoto dos checks deve ser conferido no PR associado ao commit.
+Os registros abaixo descrevem entregas anteriores; não são os resultados da 0.2.3.
 
 A versão 0.2.0, de 07/10/2026, concluiu a migração Apify e introduziu saída externa.
 Os checks dessa entrega e da correção 0.2.1 permanecem registrados abaixo.
