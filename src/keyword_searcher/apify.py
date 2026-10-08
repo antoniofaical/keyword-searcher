@@ -32,6 +32,26 @@ class ApifyTransport:
         self.token = token
         self.retries = retries
 
+    def http_error(self, error):
+        """Retain bounded API diagnostics without echoing credentials or terminal controls."""
+        reason = f"apify_http_{error.code}"
+        try:
+            payload = json.loads(error.read(16_385))
+        except (ValueError, TypeError, AttributeError, OSError, HTTPException):
+            return reason
+        detail = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(detail, dict):
+            return reason
+        fields = []
+        for key in ("type", "message"):
+            value = detail.get(key)
+            if isinstance(value, str):
+                value = value.replace(self.token, "[REDACTED]")
+                value = re.sub(r"apify_api_[a-zA-Z0-9_-]+", "[REDACTED]", value)
+                value = "".join(char if char.isprintable() else " " for char in value)
+                fields.append(" ".join(value.split())[:500])
+        return reason + (": " + "; ".join(fields) if fields else "")
+
     def request(self, path, body=None):
         if not self.token:
             raise DiscoveryError("APIFY_API_TOKEN is required for uncached Apify searches")
@@ -56,7 +76,7 @@ class ApifyTransport:
                 break
             except HTTPError as exc:
                 if exc.code not in {429, 500, 502, 503, 504} or attempt == attempts - 1:
-                    raise DiscoveryError(f"apify_http_{exc.code}") from exc
+                    raise DiscoveryError(self.http_error(exc)) from exc
             except (URLError, OSError, TimeoutError, HTTPException) as exc:
                 if attempt == attempts - 1:
                     raise DiscoveryError("apify_network_failure") from exc
@@ -67,6 +87,10 @@ class ApifyTransport:
             raise DiscoveryError("apify_invalid_json") from exc
 
     def start(self, queries, pages, country, language, cost_limit):
+        # The public Actor schema has pt-BR/pt-PT but no generic pt. Keep the CLI
+        # value in run configuration so existing pt databases remain resumable.
+        if language == "pt":
+            language = "pt-PT" if country.lower() == "pt" else "pt-BR"
         input_data = {
             "queries": "\n".join(queries),
             "maxPagesPerQuery": pages,
@@ -268,7 +292,7 @@ class ApifyGoogle:
                 )
             except DiscoveryError as exc:
                 raise ApifyRecoveryRequired(
-                    "Apify start not confirmed; check Apify Console before resuming "
+                    f"Apify start not confirmed ({exc}); check Apify Console before resuming "
                     "to avoid a duplicate paid run"
                 ) from exc
             self.store.apify_set_run(batch_id, run_id)

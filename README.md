@@ -71,7 +71,10 @@ a pasta de saída continua explícita. Trocar apenas `--output-dir` não invalid
 o banco nem gera outra busca.
 
 Idioma de interface e país padrão: `pt` e `br`; altere com
-`--language en --country us`. Idioma de interface não é filtro de idioma dos
+`--language en --country us`. Na chamada Apify, `pt` é convertido em `pt-BR`,
+ou em `pt-PT` quando `--country pt`. Valores explícitos `pt-BR` e `pt-PT`
+também são aceitos. A conversão conserva `pt` na configuração do banco para
+permitir retomada de execuções existentes. Idioma de interface não é filtro de idioma dos
 resultados. `--location` legado não é convertido para o UULE da Apify e só pode
 ser usado em `--recheck-sites`, para manter a configuração de um banco antigo.
 
@@ -100,10 +103,18 @@ ou leitura do dataset recupera o mesmo run. GETs com falha de rede, 429 ou 5xx
 recebem até duas novas tentativas; autenticação não recebe retry.
 
 A criação de um Actor nunca é repetida automaticamente após uma resposta incerta.
+Erros HTTP mostram o código, o tipo e a mensagem da API, com token ocultado.
+Mesmo com essa informação, uma tentativa sem ID confirmado continua bloqueada
+até a verificação no console; GET de autenticação bem-sucedido não comprova
+permissão para executar o Actor nem que seus parâmetros foram aceitos.
 Se aparecer `Apify batch is unconfirmed`, confira Runs no console Apify e vincule
 o ID correto com `--apify-recover-run-id ID`. Se um run não puder ser recuperado,
 confira-o e use `--apify-abandon-batch` para permitir uma nova tentativa.
 Isso não devolve créditos nem reduz a reserva de páginas.
+Por exemplo, 19 queries com `--max-pages 5` reservam 95 páginas. Se o console
+confirmar que nenhuma execução foi criada, abandonar essa tentativa e reservar
+o mesmo lote novamente exige pelo menos `--max-apify-pages 190`. Isso é um limite
+cumulativo local; o teto monetário por Actor permanece o valor configurado.
 
 A importação valida todo o dataset e salva páginas e cobertura numa transação.
 Uma página com dez links não comprova continuação. Não há outro Actor automático

@@ -1,4 +1,6 @@
 import json
+from io import BytesIO
+from pathlib import Path
 from unittest.mock import Mock
 from urllib.error import HTTPError, URLError
 
@@ -164,6 +166,77 @@ def test_lost_post_response_never_retries_start(monkeypatch):
     with pytest.raises(DiscoveryError, match="network_failure"):
         ApifyTransport("secret").start(["q"], 3, "br", "pt", 1)
     urlopen.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "country,language,expected",
+    [
+        ("br", "pt", "pt-BR"),
+        ("pt", "pt", "pt-PT"),
+        ("us", "pt", "pt-BR"),
+        ("us", "en", "en"),
+        ("br", "pt-PT", "pt-PT"),
+        ("pt", "pt-BR", "pt-BR"),
+    ],
+)
+def test_portuguese_input_matches_public_actor_language_contract(country, language, expected):
+    fixture = Path(__file__).parent / "fixtures/apify_language_contract.json"
+    accepted = json.loads(fixture.read_text(encoding="utf-8"))["languageCode"]["enum"]
+    # These values come from the public Actor build, independent of our adapter.
+    assert "pt" not in accepted
+    transport = ApifyTransport("secret")
+    transport.request = Mock(return_value={"data": {"id": "run123"}})
+    assert transport.start(["q"], 5, country, language, 2) == "run123"
+    sent = transport.request.call_args.args[1]
+    assert sent["languageCode"] == expected
+    assert sent["languageCode"] in accepted
+
+
+def test_post_rejection_retains_api_reason_and_redacts_credentials(monkeypatch):
+    token = "apify_api_test_secret"
+    body = json.dumps(
+        {"error": {"type": "invalid-input", "message": f"languageCode invalid {token}\n\x1b"}}
+    ).encode()
+    failure = HTTPError("secret-url", 400, "secret-title", {}, BytesIO(body))
+    urlopen = Mock(side_effect=failure)
+    monkeypatch.setattr("keyword_searcher.apify.urlopen", urlopen)
+    with pytest.raises(DiscoveryError, match="apify_http_400: invalid-input") as exc:
+        ApifyTransport(token).start(["q"], 5, "br", "pt", 2)
+    assert "languageCode invalid" in str(exc.value)
+    assert token not in str(exc.value)
+    assert "\x1b" not in str(exc.value)
+    assert "\n" not in str(exc.value)
+    urlopen.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"<html>bad gateway</html>", b"[]", b'{"error": []}', b'{"error": {"message": []}}'],
+)
+def test_invalid_error_body_keeps_http_status_without_crashing(monkeypatch, body):
+    failure = HTTPError("secret", 400, "secret", {}, BytesIO(body))
+    monkeypatch.setattr("keyword_searcher.apify.urlopen", Mock(side_effect=failure))
+    with pytest.raises(DiscoveryError, match="^apify_http_400$"):
+        ApifyTransport("secret").start(["q"], 3, "br", "pt", 1)
+
+
+def test_uncertain_start_shows_cause_and_remains_blocked(tmp_path, monkeypatch):
+    body = json.dumps(
+        {"error": {"type": "invalid-input", "message": "languageCode is invalid"}}
+    ).encode()
+    failure = HTTPError("secret", 400, "", {}, BytesIO(body))
+    urlopen = Mock(side_effect=failure)
+    monkeypatch.setattr("keyword_searcher.apify.urlopen", urlopen)
+    store = Store(tmp_path / "state.sqlite", {})
+    provider = ApifyGoogle(ApifyTransport("secret"), store, ["q"], "br", "pt", 5, 100)
+    with pytest.raises(ApifyRecoveryRequired, match="apify_http_400: invalid-input"):
+        provider.search("q", 0)
+    assert store.apify_open_batch()[3] == "planned"
+    assert store.apify_reserved_pages() == 5
+    with pytest.raises(ApifyRecoveryRequired, match="unconfirmed"):
+        provider.search("q", 0)
+    urlopen.assert_called_once()
+    store.close()
 
 
 def test_completed_waits_through_transient_states_and_reads_stable_evidence(monkeypatch):
