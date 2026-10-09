@@ -72,6 +72,11 @@ def test_recheck_all_statuses_on_copy_with_backup_and_no_apify(tmp_path, monkeyp
     assert summary["after"] == {"confirmed": 2, "skipped": 1}
     assert summary["changed"] == 3
     assert summary["exported_rows"] == 2
+    handoff = json.loads((output / "handoff.json").read_text(encoding="utf-8"))
+    assert handoff == [{"name": "Synthetic Supplier", "url": "https://article.example.org/"}]
+    metadata = json.loads((output / "handoff.metadata.json").read_text(encoding="utf-8"))
+    assert metadata["counts"]["confirmed_resolutions"] == 2
+    assert metadata["coverage"]["partial"]  # original Google depth limit preserved
     assert not summary["interrupted"]
     assert (original / "state.sqlite").read_bytes() == source_bytes
     backup = Store.open_existing(output / "state-before.sqlite")
@@ -126,6 +131,8 @@ def test_interrupt_exports_partial_copy_with_recoverable_state(tmp_path):
     http.get.side_effect = [response, KeyboardInterrupt()]
     summary = recheck_saved(original, output, http=http, progress=False)
     assert summary["interrupted"]
+    metadata = json.loads((output / "handoff.metadata.json").read_text(encoding="utf-8"))
+    assert metadata["coverage"]["interrupted"] and metadata["coverage"]["partial"]
     assert (output / "state-before.sqlite").is_file()
     assert (output / "state.sqlite").is_file()
     assert (output / "companies.csv").is_file()
