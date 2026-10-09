@@ -241,6 +241,10 @@ def test_pipeline_resume_csv_and_provenance(tmp_path):
     assert resolver.resolve.call_count == first_count
     report = store.export(tmp_path)
     assert report["exported_rows"] == 2
+    assert report["handoff"]["sites"] == 1
+    assert json.loads((tmp_path / "handoff.json").read_text(encoding="utf-8")) == [
+        {"name": "A; B", "url": "https://example.org/"}
+    ]
     with (tmp_path / "companies.csv").open(encoding="utf-8-sig", newline="") as f:
         rows = list(csv.reader(f, delimiter=";"))
     assert rows[0] == ["CompanyName", "URL", "SearchQuery"]

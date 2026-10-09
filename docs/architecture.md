@@ -83,7 +83,9 @@ progresso de busca anteriormente registrado.
 
 ## Diretórios e exportação
 
-`--output-dir` é obrigatório e recebe companies.csv, pending.json e report.json.
+`--output-dir` é obrigatório e recebe companies.csv, pending.json, report.json,
+handoff.json e handoff.metadata.json. `handoff.py` prepara o contrato do consumidor
+e a rastreabilidade sem acessar rede; export.py escreve os cinco arquivos.
 O caminho é resolvido antes do uso, incluindo links e `~`. Checkouts identificados
 a partir do pacote ou da pasta de trabalho, e o próprio pacote instalado, não
 podem receber exportações. Em instalação sem checkout não se inventa uma raiz
@@ -95,8 +97,16 @@ o layout recomendado mantém também o SQLite numa pasta externa.
 
 CSV mantém BOM UTF-8, ponto e vírgula, escaping e deduplicação por URL/query.
 Cada arquivo é escrito num temporário e substituído com `os.replace`; não há
-transação conjunta entre os três arquivos. O SQLite permite regenerar a saída
+transação conjunta entre os cinco arquivos. O contrato de handoff é validado
+antes de substituir qualquer output; falhas de escrita preservam o arquivo de
+destino afetado e removem seu temporário. O SQLite permite regenerar a saída
 após uma interrupção. Um processo por diretório de estado e por pasta de saída.
+
+`python -m keyword_searcher.export` abre um estado de esquema 2 somente para
+leitura e chama o mesmo exportador, sem migração, resolução, token ou provedor.
+Report recebe um resumo aditivo de handoff; CSV, SQLite e regras de identificação
+não mudam. Interrupções da CLI e do recheck são passadas explicitamente ao
+manifesto. O contrato e as regras de deduplicação estão em [handoff.md](handoff.md).
 
 ## Auditoria e estados de resolução
 
