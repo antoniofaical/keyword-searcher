@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.4
+# Arquitetura e contratos — 0.2.6
 
 ## Responsabilidade
 
@@ -45,6 +45,10 @@ de contexto são rejeitados.
 permanece disponível para leitura/manutenção de bancos, sem uso na CLI nova.
 Novas buscas reservam queries × profundidade em `apify_batches`, antes da criação
 remota. `apify_reserved_pages` é conservador e cumulativo; não é custo monetário.
+Quando `--max-apify-pages` é omitido, a CLI calcula queries únicas × `--max-pages`.
+O limite explícito prevalece. Esse orçamento não identifica a configuração do
+banco, então pode mudar na retomada sem repetir páginas salvas; reservas anteriores,
+inclusive lotes abandonados, continuam contando.
 
 A criação de Actor é enviada uma vez. GETs de status/dataset podem receber dois
 retries para rede, 429 e 5xx. Após confirmação, o run ID é persistido. Se a criação

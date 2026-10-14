@@ -58,8 +58,9 @@ def main(argv=None):
     parser.add_argument(
         "--max-apify-pages",
         type=positive,
-        default=900,
-        help="Cumulative page reservations across Apify batches (default: 900)",
+        default=None,
+        help="Cumulative page reservations across Apify batches "
+        "(default: unique queries x --max-pages)",
     )
     parser.add_argument("--apify-batch-size", type=positive, default=20)
     parser.add_argument(
@@ -92,6 +93,8 @@ def main(argv=None):
         queries = read_queries(args.queries)
         if not queries:
             raise DiscoveryError("The queries file is empty")
+        if args.max_apify_pages is None:
+            args.max_apify_pages = len(queries) * args.max_pages
         if args.apify_abandon_batch and args.apify_recover_run_id:
             raise DiscoveryError("Choose either --apify-abandon-batch or --apify-recover-run-id")
         config = dict(

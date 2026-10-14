@@ -1,4 +1,20 @@
-# Validação — versão 0.2.4
+# Validação — versão 0.2.6
+
+## Limite automático de páginas — 14/10/2026
+
+- O padrão fixo de 900 páginas foi substituído por queries únicas × profundidade.
+  A mudança permite cobrir todas as queries sem calcular um limite manual; um
+  limite explícito menor continua restringindo a coleta.
+- 240 testes passaram localmente em Windows/Python 3.12.14. Os sete novos casos
+  cobrem 26 queries × 10 páginas, uma coleta acima do antigo padrão de 900,
+  profundidade padrão, BOM/linhas vazias/repetidas, retomada de 100 para 260 páginas,
+  reserva insuficiente para uma query e rejeição de limites zero/negativo.
+- As buscas de teste usam transporte sintético. A retomada conserva reservas
+  anteriores e não recria Actors para queries já salvas. Teto monetário por Actor
+  e tamanho máximo dos lotes são preservados.
+- Ruff lint/formatação, instalação editável 0.2.6, verificação das dependências
+  e ajuda da CLI passaram. Nenhuma busca Apify ou requisição a sites foi realizada.
+- O estado remoto dos checks deve ser conferido no PR associado ao commit.
 
 ## Correções a partir da reavaliação real — 08/10/2026
 
