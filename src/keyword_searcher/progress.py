@@ -1,4 +1,4 @@
-"""Terminal feedback for the sequential discovery pipeline."""
+"""Thread-safe terminal feedback for discovery and concurrent site resolution."""
 
 import os
 import shutil
@@ -40,6 +40,24 @@ class TerminalProgress:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._heartbeat = None
+        self.worker_limit = None
+        self.active_workers = {}
+
+    def configure_workers(self, workers):
+        with self._lock:
+            self.worker_limit = workers
+
+    def begin_worker(self, url):
+        token = object()
+        with self._lock:
+            self.active_workers[token] = (urlsplit(url).hostname or url, time.monotonic())
+            self._draw_locked()
+        return token
+
+    def end_worker(self, token):
+        with self._lock:
+            self.active_workers.pop(token, None)
+            self._draw_locked()
 
     def _write(self, message):
         encoding = getattr(self.stream, "encoding", None)
@@ -81,7 +99,7 @@ class TerminalProgress:
 
     def begin_page(self, page_number, cached):
         with self._lock:
-            source = "stored" if cached else "Google"
+            source = "stored" if cached else "waiting for Apify batch"
             self.activity = f"Page {page_number}/{self.max_pages}: {source}"
             self._draw_locked()
 
@@ -138,9 +156,19 @@ class TerminalProgress:
         if not self.enabled:
             return
         elapsed = int(time.monotonic() - self.started)
+        activity = self.activity
+        workers = ""
+        if self.worker_limit is not None:
+            completed = self.confirmed + self.pending + self.skipped
+            workers = f"Workers {len(self.active_workers)}/{self.worker_limit} active; sites_done={completed}"
+        if self.active_workers:
+            host, started = min(self.active_workers.values(), key=lambda item: item[1])
+            activity = f"Checking {host} site_elapsed={int(time.monotonic() - started)}s"
         if not self.live:
             # Redirected output remains readable without terminal escape sequences.
-            message = f"[{elapsed}s] {self.activity}"
+            message = f"[total_elapsed={elapsed}s] {activity}"
+            if workers:
+                message += f" | {workers}"
             self._write(message + "\n")
             self.stream.flush()
             return
@@ -155,8 +183,10 @@ class TerminalProgress:
             ),
             self._bar("pages", self.pages_done, self.max_pages, "current query / limit", width),
             self._bar("results", self.results_done, self.results_total, "current page", width),
-            f"{self.activity}  elapsed={elapsed}s"[: max(1, width - 1)],
         ]
+        if workers:
+            lines.append(workers[: max(1, width - 1)])
+        lines.append(f"{activity} total_elapsed={elapsed}s"[: max(1, width - 1)])
         if self._lines:
             self._write("\r\033[2K")
             for _ in range(self._lines - 1):

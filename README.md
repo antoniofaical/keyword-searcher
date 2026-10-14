@@ -78,6 +78,30 @@ permitir retomada de execuções existentes. Idioma de interface não é filtro 
 resultados. `--location` legado não é convertido para o UULE da Apify e só pode
 ser usado em `--recheck-sites`, para manter a configuração de um banco antigo.
 
+## Workers e progresso
+
+A verificação dos sites usa oito workers por padrão. Ajuste com `--workers N`;
+`--workers 1` mantém a execução sequencial. Isso também vale para `--retry-pending`,
+`--recheck-sites` e `python -m keyword_searcher.recheck`. A quantidade de workers
+pode mudar na retomada do mesmo banco.
+
+Sites da página atual são resolvidos em paralelo, priorizando hosts diferentes.
+Há no máximo uma requisição ativa por host, agrupando o alias `www`, inclusive
+nos redirecionamentos. O cache compartilhado evita baixar simultaneamente a mesma
+URL; decisões continuam sendo calculadas por resultado para preservar a evidência
+da fonte. Um único fluxo grava no SQLite, conforme as resoluções terminam.
+
+O terminal mostra workers ativos, resultados contabilizados (`sites_done`),
+`total_elapsed` da execução e `site_elapsed` da resolução ativa mais antiga.
+Esses resultados não são empresas únicas. A espera do lote Google aparece como
+`waiting for Apify batch`; workers locais não aceleram o processamento na Apify.
+
+Ctrl+C para o agendamento, cancela tarefas que ainda não começaram e salva
+resoluções concluídas. Operações de rede em andamento podem precisar terminar
+antes da exportação parcial; o timeout HTTP de 20 segundos por operação não é
+um prazo global para resolver um site. Retome com o mesmo comando e diretórios.
+Os limites Apify, as regras de identidade e o contrato do handoff permanecem iguais.
+
 ## Apify, limites e retomada
 
 Apify é o único provedor de buscas novas. `--provider apify` continua aceito por

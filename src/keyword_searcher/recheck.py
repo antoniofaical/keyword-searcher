@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .apify import ApifyGoogle
+from .cli import positive
 from .export import export_results, output_directory
 from .http import HttpClient
 from .models import DiscoveryError
@@ -17,7 +18,9 @@ from .resolve import POLICY_VERSION, WebsiteResolver
 from .store import Store
 
 
-def recheck_saved(run_dir, directory, *, http=None, progress=True):
+def recheck_saved(run_dir, directory, *, http=None, progress=True, workers=8):
+    if workers < 1:
+        raise DiscoveryError("workers must be greater than zero")
     directory = output_directory(directory)
     if directory.exists():
         raise DiscoveryError("Recheck output already exists; choose a new directory")
@@ -55,7 +58,12 @@ def recheck_saved(run_dir, directory, *, http=None, progress=True):
         try:
             with TerminalProgress(len(queries), maximum, enabled=progress) as display:
                 recheck_sites(
-                    queries, ApifyGoogle, WebsiteResolver(http or HttpClient()), store, display
+                    queries,
+                    ApifyGoogle,
+                    WebsiteResolver(http or HttpClient()),
+                    store,
+                    display,
+                    workers,
                 )
         except KeyboardInterrupt:
             interrupted = True
@@ -105,9 +113,14 @@ def main(argv=None):
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument(
+        "--workers", type=positive, default=8, help="Concurrent site resolutions (default: 8)"
+    )
     args = parser.parse_args(argv)
     try:
-        summary = recheck_saved(args.run_dir, args.output_dir, progress=not args.no_progress)
+        summary = recheck_saved(
+            args.run_dir, args.output_dir, progress=not args.no_progress, workers=args.workers
+        )
     except (DiscoveryError, OSError, sqlite3.Error, ValueError) as exc:
         parser.exit(1, f"Error: {exc}\n")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
