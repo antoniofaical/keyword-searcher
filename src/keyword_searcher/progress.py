@@ -44,15 +44,23 @@ class TerminalProgress:
         self.active_workers = {}
         self.global_mode = False
         self.queued_sites = 0
+        self.search_activity = None
+        self.ready_hosts = None
+
+    def search_changed(self, activity):
+        with self._lock:
+            self.search_activity = activity
+            self._draw_locked()
 
     def configure_workers(self, workers, *, global_mode=False):
         with self._lock:
             self.worker_limit = workers
             self.global_mode = global_mode
 
-    def queue_changed(self, queued):
+    def queue_changed(self, queued, *, ready_hosts=None):
         with self._lock:
             self.queued_sites = queued
+            self.ready_hosts = ready_hosts
             self._draw_locked()
 
     def begin_worker(self, url):
@@ -175,6 +183,8 @@ class TerminalProgress:
             workers = f"Workers {len(self.active_workers)}/{self.worker_limit} active; sites_done={completed}"
             if self.global_mode:
                 workers += f" queued={self.queued_sites}"
+                if self.ready_hosts is not None:
+                    workers += f" ready_hosts={self.ready_hosts}"
         if self.active_workers:
             host, started = min(self.active_workers.values(), key=lambda item: item[1])
             activity = f"Checking {host} site_elapsed={int(time.monotonic() - started)}s"
@@ -183,6 +193,8 @@ class TerminalProgress:
             message = f"[total_elapsed={elapsed}s] {activity}"
             if workers:
                 message += f" | {workers}"
+            if self.search_activity is not None:
+                message += f" | Apify: {self.search_activity}"
             self._write(message + "\n")
             self.stream.flush()
             return
@@ -212,6 +224,8 @@ class TerminalProgress:
         ]
         if workers:
             lines.append(workers[: max(1, width - 1)])
+        if self.search_activity is not None:
+            lines.append(f"Apify: {self.search_activity}"[: max(1, width - 1)])
         lines.append(f"{activity} total_elapsed={elapsed}s"[: max(1, width - 1)])
         if self._lines:
             self._write("\r\033[2K")

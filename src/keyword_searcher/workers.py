@@ -5,6 +5,7 @@ from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecut
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from .job_queue import JobQueue
 from .models import DiscoveryError
 
 
@@ -45,7 +46,7 @@ class ResolutionWorkers:
         self.executor = None
         self.store = None
         self.pending = {}
-        self.queued = deque()
+        self.queued = JobQueue()
         self.busy_hosts = set()
         self.counts = {}
         self.closed = {}
@@ -73,6 +74,7 @@ class ResolutionWorkers:
         finally:
             if self.executor:
                 self.executor.shutdown(wait=True, cancel_futures=True)
+            self.queued.close()
 
     def _resolve(self, result):
         token = self.progress.begin_worker(result.url) if self.progress else None
@@ -99,9 +101,7 @@ class ResolutionWorkers:
                     self.progress.begin_result(result.url, False)
                 self._save(Job(query, result), self._resolve(result))
             else:
-                # Bounded lookahead across pages/queries, not one queue per page.
-                while len(self.queued) >= self.workers * 4:
-                    self._wait_one()
+                # Backlog is on disk: busy hosts cannot stop reading other queries.
                 self.counts[query] = self.counts.get(query, 0) + 1
                 self.queued.append(Job(query, result))
                 self._schedule()
@@ -132,21 +132,20 @@ class ResolutionWorkers:
 
     def _schedule(self):
         # Source hosts waiting on their turn stay outside the executor.
-        for _ in range(len(self.queued)):
-            if len(self.pending) >= self.workers:
+        while len(self.pending) < self.workers:
+            item = self.queued.pop()
+            if item is None:
                 break
-            job = self.queued.popleft()
-            if job.host in self.busy_hosts:
-                self.queued.append(job)
-                continue
+            job = Job(*item)
             self.busy_hosts.add(job.host)
             future = self.executor.submit(self._resolve, job.result)
             self.pending[future] = job
         if self.progress:
-            self.progress.queue_changed(len(self.queued))
+            self.progress.queue_changed(len(self.queued), ready_hosts=self.queued.ready_hosts())
 
     def _accept(self, future, job, *, aborting=False):
         self.busy_hosts.discard(job.host)
+        self.queued.release(job.host)
         try:
             self._save(job, future.result())
         except (KeyboardInterrupt, CancelledError):
@@ -164,12 +163,19 @@ class ResolutionWorkers:
     def _collect(self, done):
         for future in done:
             self._accept(future, self.pending.pop(future))
+            if self.executor:
+                # Refill each freed slot while persisting the rest of a completed group.
+                self._schedule()
 
     def _wait_one(self):
         self._schedule()
         if self.pending:
             done, _ = wait(self.pending, timeout=0.1, return_when=FIRST_COMPLETED)
             self._collect(done)
+        self._schedule()
+
+    def poll(self):
+        self._collect([future for future in self.pending if future.done()])
         self._schedule()
 
     def drain(self):
@@ -181,7 +187,7 @@ class ResolutionWorkers:
         if callable(cancel):
             cancel()
         while self.queued:
-            job = self.queued.popleft()
+            job = Job(*self.queued.pop(ready=False))
             self.interrupted.add(job.query)
             self.counts[job.query] -= 1
             self._finish_query(job.query)
@@ -192,4 +198,4 @@ class ResolutionWorkers:
         for future in list(self.pending):
             self._accept(future, self.pending.pop(future), aborting=True)
         if self.progress:
-            self.progress.queue_changed(0)
+            self.progress.queue_changed(0, ready_hosts=0)

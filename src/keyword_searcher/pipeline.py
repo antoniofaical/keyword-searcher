@@ -1,7 +1,8 @@
 import json
 
-from .apify import ApifyRecoveryRequired
+from .apify import ApifyGoogle, ApifyRecoveryRequired
 from .models import BudgetExceeded, DiscoveryError
+from .parallel_pipeline import run_parallel
 from .workers import ResolutionWorkers, WorkerFailure
 
 
@@ -9,7 +10,8 @@ def run(
     queries, provider, resolver, store, max_pages, retry_pending=False, progress=None, workers=1
 ):
     with ResolutionWorkers(resolver, workers, progress) as pool:
-        _run(queries, provider, pool, store, max_pages, retry_pending, progress)
+        execute = run_parallel if workers > 1 and isinstance(provider, ApifyGoogle) else _run
+        execute(queries, provider, pool, store, max_pages, retry_pending, progress)
 
 
 def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
