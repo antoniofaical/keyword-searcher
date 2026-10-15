@@ -23,6 +23,7 @@ class SearchPage:
     next_start: int | None
     end_status: str = "complete"
     end_reason: str = ""
+    search_error: bool = False
 
 
 @dataclass(frozen=True)

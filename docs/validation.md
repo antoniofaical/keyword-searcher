@@ -1,4 +1,25 @@
-# Validação — versão 0.2.7
+# Validação — versão 0.2.8
+
+## Registros de erro no dataset Apify — 15/10/2026
+
+- O usuário forneceu uma contagem de 337 registros no dataset do run
+  `8ThDrgX2YAu1H37Vo`, dos quais um era `#error: true` sem `searchQuery`.
+  `#debug.url` identificava a página 19 de “startup brasileira diabetes saúde digital”.
+  As mensagens indicavam páginas vazias nas tentativas e um erro 500 do proxy.
+  O banco completo e as 336 páginas não foram recebidos neste ambiente.
+- 283 testes locais passaram em Windows/Python 3.12.14. Os 24 novos casos incluem
+  uma reconstrução sintética com 336 páginas e um erro no formato recebido:
+  336 páginas importadas, 19 queries completas e uma incompleta, marcador excluído
+  da contagem de páginas e retomada do run existente sem POST.
+- Também são verificados erro inicial/intermediário/final, query só com erro,
+  lote inteiro com erro, associação inválida/contraditória, domínio falso,
+  offsets e parâmetros ambíguos, lacuna inexplicada, sucesso e erro na mesma página,
+  preservação da incerteza das contagens da fila e recheck em cópia.
+- A amostra sintética contém um token falso nos debug traces para verificar sua
+  exclusão do relatório. Falhas mapeadas não viram resultados vazios completos;
+  formatos desconhecidos continuam bloqueando a transação inteira.
+- Ruff lint/formatação aprovados. Nenhuma chamada Apify ou visita a sites foi feita.
+- O estado remoto dos checks deve ser conferido no PR associado ao commit.
 
 ## Workers de resolução — 14/10/2026
 

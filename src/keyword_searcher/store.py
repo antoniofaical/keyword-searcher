@@ -124,7 +124,8 @@ class Store:
 
     def apify_pages(self):
         return self.db.execute(
-            "SELECT COUNT(*) FROM pages WHERE json_extract(payload, '$.provider')='apify-google'"
+            "SELECT COUNT(*) FROM pages WHERE json_extract(payload, '$.provider')='apify-google' "
+            "AND COALESCE(json_extract(payload, '$.search_error'), 0)=0"
         ).fetchone()[0]
 
     def apify_open_batch(self):
