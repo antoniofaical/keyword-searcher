@@ -42,10 +42,18 @@ class TerminalProgress:
         self._heartbeat = None
         self.worker_limit = None
         self.active_workers = {}
+        self.global_mode = False
+        self.queued_sites = 0
 
-    def configure_workers(self, workers):
+    def configure_workers(self, workers, *, global_mode=False):
         with self._lock:
             self.worker_limit = workers
+            self.global_mode = global_mode
+
+    def queue_changed(self, queued):
+        with self._lock:
+            self.queued_sites = queued
+            self._draw_locked()
 
     def begin_worker(self, url):
         token = object()
@@ -91,9 +99,10 @@ class TerminalProgress:
     def begin_query(self, index, query):
         with self._lock:
             self.query_index = index
-            self.pages_done = 0
-            self.results_done = 0
-            self.results_total = 0
+            if not self.global_mode:
+                self.pages_done = 0
+                self.results_done = 0
+                self.results_total = 0
             self.activity = f"Query {index}/{self.total_queries}: {query}"
             self._draw_locked()
 
@@ -106,8 +115,11 @@ class TerminalProgress:
     def page_ready(self, results_total):
         with self._lock:
             self.pages_done += 1
-            self.results_total = results_total
-            self.results_done = 0
+            if self.global_mode:
+                self.results_total += results_total
+            else:
+                self.results_total = results_total
+                self.results_done = 0
             self.activity = f"Page loaded: {results_total} new links"
             self._draw_locked()
 
@@ -130,10 +142,10 @@ class TerminalProgress:
             self.activity = f"Last link: {resolution.status}"
             self._draw_locked()
 
-    def finish_query(self, status):
+    def finish_query(self, status, *, index=None):
         with self._lock:
             self.queries_done += 1
-            self.activity = f"Query {self.query_index}/{self.total_queries}: {status}"
+            self.activity = f"Query {index or self.query_index}/{self.total_queries}: {status}"
             self._draw_locked()
 
     def _bar(self, name, done, total, extra, width):
@@ -161,6 +173,8 @@ class TerminalProgress:
         if self.worker_limit is not None:
             completed = self.confirmed + self.pending + self.skipped
             workers = f"Workers {len(self.active_workers)}/{self.worker_limit} active; sites_done={completed}"
+            if self.global_mode:
+                workers += f" queued={self.queued_sites}"
         if self.active_workers:
             host, started = min(self.active_workers.values(), key=lambda item: item[1])
             activity = f"Checking {host} site_elapsed={int(time.monotonic() - started)}s"
@@ -181,8 +195,20 @@ class TerminalProgress:
                 f"confirmed={self.confirmed} pending={self.pending} skipped={self.skipped}",
                 width,
             ),
-            self._bar("pages", self.pages_done, self.max_pages, "current query / limit", width),
-            self._bar("results", self.results_done, self.results_total, "current page", width),
+            self._bar(
+                "pages",
+                self.pages_done,
+                self.max_pages * self.total_queries if self.global_mode else self.max_pages,
+                "global loaded / limit" if self.global_mode else "current query / limit",
+                width,
+            ),
+            self._bar(
+                "results",
+                self.results_done,
+                self.results_total,
+                "global loaded" if self.global_mode else "current page",
+                width,
+            ),
         ]
         if workers:
             lines.append(workers[: max(1, width - 1)])

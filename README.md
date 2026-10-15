@@ -85,16 +85,28 @@ A verificação dos sites usa oito workers por padrão. Ajuste com `--workers N`
 `--recheck-sites` e `python -m keyword_searcher.recheck`. A quantidade de workers
 pode mudar na retomada do mesmo banco.
 
-Sites da página atual são resolvidos em paralelo, priorizando hosts diferentes.
+Os sites entram numa fila contínua entre páginas e consultas já coletadas.
+Uma página lenta não bloqueia o agendamento das páginas e consultas seguintes.
+O executor recebe até N tarefas e a fila local guarda até 4 × N aguardando;
+quando ela enche, a leitura espera conclusões antes de carregar mais resultados.
+Links do mesmo host aguardam fora do executor enquanto esse host tem uma resolução
+ativa, liberando slots para outros hosts. `--workers 100` pode assim usar 100
+resoluções simultâneas quando existem hosts independentes prontos para processamento.
 Há no máximo uma requisição ativa por host, agrupando o alias `www`, inclusive
 nos redirecionamentos. O cache compartilhado evita baixar simultaneamente a mesma
 URL; decisões continuam sendo calculadas por resultado para preservar a evidência
 da fonte. Um único fluxo grava no SQLite, conforme as resoluções terminam.
 
-O terminal mostra workers ativos, resultados contabilizados (`sites_done`),
+O terminal mostra workers ativos, links aguardando (`queued`), resultados contabilizados (`sites_done`),
 `total_elapsed` da execução e `site_elapsed` da resolução ativa mais antiga.
+Com vários workers, Pages e Results são contadores globais, sem reiniciar a cada
+consulta; Pages mostra posições lidas / limite, incluindo marcadores de falha.
+Uma consulta só termina quando todas as suas resoluções foram persistidas.
 Esses resultados não são empresas únicas. A espera do lote Google aparece como
 `waiting for Apify batch`; workers locais não aceleram o processamento na Apify.
+Antes de aguardar um novo lote pago, as resoluções já disponíveis são concluídas
+e gravadas. O número de workers é um teto: cache, hosts repetidos, trabalho restante,
+CPU e latência podem deixar slots ociosos.
 
 Ctrl+C para o agendamento, cancela tarefas que ainda não começaram e salva
 resoluções concluídas. Operações de rede em andamento podem precisar terminar

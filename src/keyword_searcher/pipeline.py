@@ -2,7 +2,7 @@ import json
 
 from .apify import ApifyRecoveryRequired
 from .models import BudgetExceeded, DiscoveryError
-from .workers import ResolutionWorkers
+from .workers import ResolutionWorkers, WorkerFailure
 
 
 def run(
@@ -25,13 +25,17 @@ def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
         start = 0
         seen = set()
         status = "failed"
+        reason = ""
         try:
             for page_index in range(max_pages):
                 payload = store.page(query, start)
                 if budget_exhausted and payload is None:
                     status = "incomplete" if page_index else "not_started"
-                    store.progress(query, status, budget_reason)
+                    reason = budget_reason
                     break
+                if payload is None:
+                    # Finish the available site work before blocking on a paid batch.
+                    pool.drain()
                 if progress:
                     progress.begin_page(page_index + 1, payload is not None)
                 if payload is None:
@@ -43,46 +47,43 @@ def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
                     progress.page_ready(len(new_results))
                 if page.results and not new_results:
                     status = "incomplete"
-                    store.progress(query, status, "repeated_results")
+                    reason = "repeated_results"
                     break
                 pool.process(query, new_results, store, retry_pending=retry_pending)
                 seen.update(result.url for result in new_results)
                 if page.next_start is None:
                     status = page.end_status
-                    store.progress(query, status, page.end_reason)
+                    reason = page.end_reason
                     break
                 if not page.results and not page.search_error:
                     status = "incomplete"
-                    store.progress(query, status, "empty_page_with_next")
+                    reason = "empty_page_with_next"
                     break
                 start = page.next_start
             else:
                 status = "limited"
-                store.progress(query, status, "max_pages")
+                reason = "max_pages"
         except BudgetExceeded as exc:
             budget_exhausted = True
             budget_reason = str(exc)
             status = "incomplete" if store.page(query, 0) is not None else "not_started"
-            store.progress(
-                query,
-                status,
-                budget_reason,
-            )
+            reason = budget_reason
             # Other queries can still be processed entirely from stored responses.
             continue
         except ApifyRecoveryRequired:
-            store.progress(query, status, "apify_run_needs_recovery")
+            reason = "apify_run_needs_recovery"
+            raise
+        except WorkerFailure:
+            status, reason = "interrupted", ""
             raise
         except DiscoveryError as exc:
             status = "incomplete" if store.page(query, 0) is not None else "failed"
-            store.progress(query, status, str(exc))
+            reason = str(exc)
         except KeyboardInterrupt:
             status = "interrupted"
-            store.progress(query, status)
             raise
         finally:
-            if progress:
-                progress.finish_query(status)
+            pool.close_query(query, query_index, status, reason, store)
 
 
 def recheck_sites(queries, provider, resolver, store, progress=None, workers=1):
@@ -96,14 +97,15 @@ def _recheck_sites(queries, provider, pool, store, progress):
         if progress:
             progress.begin_query(index, query)
         seen = set()
-        for page_number, (start, raw) in enumerate(store.saved_pages(query), start=1):
-            if progress:
-                progress.begin_page(page_number, True)
-            page = provider.parse(json.loads(raw), start)
-            results = [result for result in page.results if result.url not in seen]
-            if progress:
-                progress.page_ready(len(results))
-            pool.process(query, results, store, recheck=True)
-            seen.update(result.url for result in results)
-        if progress:
-            progress.finish_query("rechecked")
+        try:
+            for page_number, (start, raw) in enumerate(store.saved_pages(query), start=1):
+                if progress:
+                    progress.begin_page(page_number, True)
+                page = provider.parse(json.loads(raw), start)
+                results = [result for result in page.results if result.url not in seen]
+                if progress:
+                    progress.page_ready(len(results))
+                pool.process(query, results, store, recheck=True)
+                seen.update(result.url for result in results)
+        finally:
+            pool.close_query(query, index, "rechecked", "", store, persist=False)
