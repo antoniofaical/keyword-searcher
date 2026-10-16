@@ -4,6 +4,9 @@ permissions:
   contents: read
 jobs:
   tests:
+    timeout-minutes: 10
+    env:
+      PYTEST_ADDOPTS: '-v -o faulthandler_timeout=60'
     strategy:
       matrix:
         include:

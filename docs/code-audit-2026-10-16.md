@@ -145,10 +145,15 @@ Validação local em Linux/Python 3.12.14:
   O teste foi ajustado para simular explicitamente a ausência de checkout. Os
   testes reais de rejeição de checkout e de pacote continuam ativos; o código de
   produção de validação de diretórios não foi modificado.
-- Após esse ajuste, 322 testes aprovados. Bootstrap Bash executado a partir de
-  outra pasta, incluindo instalação editável 0.2.11, dependências, Ruff,
-  formatação e ajuda da CLI. O resultado da repetição do bootstrap e os checks
-  remotos são registrados na entrega/PR, vinculados ao commit verificado.
+- Após esse ajuste, 322 testes aprovados. Bootstrap Bash executado duas vezes a
+  partir de outra pasta, incluindo instalação editável 0.2.11, dependências, Ruff,
+  formatação e ajuda da CLI. O CI do push também aprovou Linux e Windows.
+- Na primeira execução do PR, o job Windows permaneceu no bootstrap por cerca de
+  dez minutos, sem log completo disponível pela API; o equivalente do push no
+  mesmo commit terminou com sucesso. A causa não foi determinada. O CI passa a
+  ter limite de dez minutos por job, nomes de testes no log e dump de threads
+  quando um teste demora mais de sessenta segundos. O dump é diagnóstico, não um
+  cancelamento do teste. Os checks do commit final são registrados no PR.
 - Consulta ao PyPI para as versões instaladas de `beautifulsoup4` 4.15.0,
   `soupsieve` 3.0.3 e `typing_extensions` 4.16.0 retornou listas vazias de
   vulnerabilidades. Isso é uma consulta às versões usadas, não uma garantia sobre
