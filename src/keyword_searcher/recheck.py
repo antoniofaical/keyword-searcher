@@ -16,6 +16,8 @@ from .pipeline import recheck_sites
 from .progress import TerminalProgress
 from .resolve import POLICY_VERSION, WebsiteResolver
 from .store import Store
+from .worker_diagnostics import failure_exit_message
+from .workers import WorkerFailure
 
 
 def recheck_saved(run_dir, directory, *, http=None, progress=True, workers=8):
@@ -121,6 +123,8 @@ def main(argv=None):
         summary = recheck_saved(
             args.run_dir, args.output_dir, progress=not args.no_progress, workers=args.workers
         )
+    except WorkerFailure as exc:
+        parser.exit(1, failure_exit_message(exc, args.output_dir))
     except (DiscoveryError, OSError, sqlite3.Error, ValueError) as exc:
         parser.exit(1, f"Error: {exc}\n")
     print(json.dumps(summary, indent=2, ensure_ascii=False))

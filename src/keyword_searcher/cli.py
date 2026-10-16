@@ -14,6 +14,8 @@ from .pipeline import recheck_sites, run
 from .progress import TerminalProgress
 from .resolve import WebsiteResolver
 from .store import Store
+from .worker_diagnostics import failure_exit_message
+from .workers import WorkerFailure
 
 
 def positive(value):
@@ -172,6 +174,8 @@ def main(argv=None):
             return 130
         incomplete = any(q["status"] != "complete" for q in report["queries"])
         return 2 if incomplete or report["pending"] else 0
+    except WorkerFailure as exc:
+        parser.exit(1, failure_exit_message(exc, args.output_dir))
     except (DiscoveryError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f"Error: {exc}\n")
     finally:

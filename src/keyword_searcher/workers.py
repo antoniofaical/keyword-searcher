@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from .job_queue import JobQueue
 from .models import DiscoveryError
+from .worker_diagnostics import failure_details
 
 
 def interleave_hosts(results):
@@ -33,7 +34,12 @@ class Job:
 
 
 class WorkerFailure(DiscoveryError):
-    pass
+    def __init__(self, details):
+        self.details = details
+        super().__init__(
+            f"Site worker failed ({details['exception_type']}, phase={details['phase']}, "
+            f"site={details['source_location']}); completed results were preserved"
+        )
 
 
 class ResolutionWorkers:
@@ -146,8 +152,14 @@ class ResolutionWorkers:
     def _accept(self, future, job, *, aborting=False):
         self.busy_hosts.discard(job.host)
         self.queued.release(job.host)
+        phase = "resolve"
         try:
-            self._save(job, future.result())
+            resolution = future.result()
+            phase = "persist"
+            self.store.save_resolution(job.query, job.result.url, resolution)
+            phase = "progress"
+            if self.progress:
+                self.progress.end_result(resolution)
         except (KeyboardInterrupt, CancelledError):
             self.interrupted.add(job.query)
             if not aborting:
@@ -155,7 +167,7 @@ class ResolutionWorkers:
         except BaseException as exc:
             self.failed.add(job.query)
             if not aborting:
-                raise WorkerFailure("Site worker failed; completed results were preserved") from exc
+                raise WorkerFailure(failure_details(job, exc, phase)) from exc
         finally:
             self.counts[job.query] -= 1
             self._finish_query(job.query)
