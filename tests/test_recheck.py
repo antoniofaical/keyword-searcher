@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from unittest.mock import Mock
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from keyword_searcher.http import Response
 from keyword_searcher.models import DiscoveryError, Resolution
 from keyword_searcher.recheck import main, recheck_saved
+from keyword_searcher.resolve import WebsiteResolver
 from keyword_searcher.store import Store
 
 
@@ -129,7 +131,7 @@ def test_interrupt_exports_partial_copy_with_recoverable_state(tmp_path):
     http = site_http()
     response = Response("https://old.example.org/", 403, "", "text/html")
     http.get.side_effect = [response, KeyboardInterrupt()]
-    summary = recheck_saved(original, output, http=http, progress=False)
+    summary = recheck_saved(original, output, http=http, progress=False, workers=1)
     assert summary["interrupted"]
     metadata = json.loads((output / "handoff.metadata.json").read_text(encoding="utf-8"))
     assert metadata["coverage"]["interrupted"] and metadata["coverage"]["partial"]
@@ -140,6 +142,44 @@ def test_interrupt_exports_partial_copy_with_recoverable_state(tmp_path):
     # A fresh directory can recheck the partial working copy without a search.
     finished = recheck_saved(output, tmp_path / "resumed", http=site_http(), progress=False)
     assert not finished["interrupted"]
+
+
+def test_parallel_recheck_interrupt_keeps_completed_work_and_original(tmp_path, monkeypatch):
+    original = saved_state(tmp_path)
+    original_bytes = (original / "state.sqlite").read_bytes()
+    stop, completed = threading.Event(), threading.Event()
+    original_resolve = WebsiteResolver.resolve
+
+    def resolve(self, result):
+        resolution = original_resolve(self, result)
+        if "article." in result.url:
+            completed.set()
+        return resolution
+
+    monkeypatch.setattr(WebsiteResolver, "resolve", resolve)
+
+    def get(url):
+        if "old." in url:
+            assert completed.wait(3)
+            raise KeyboardInterrupt()
+        return Response(
+            url,
+            200,
+            '<meta property="og:site_name" content="Supplier"><a href="/products">Products</a>',
+            "text/html",
+        )
+
+    http = Mock(get=Mock(side_effect=get), cancel=stop.set)
+    output = tmp_path / "parallel-partial"
+    summary = recheck_saved(original, output, http=http, progress=False, workers=2)
+    assert summary["interrupted"]
+    assert stop.is_set()
+    assert (original / "state.sqlite").read_bytes() == original_bytes
+    copy = Store.open_existing(output / "state.sqlite")
+    try:
+        assert copy.resolution("q", "https://article.example.org/").status == "confirmed"
+    finally:
+        copy.close()
 
 
 def test_malformed_page_rejected_before_site_access_or_output(tmp_path):

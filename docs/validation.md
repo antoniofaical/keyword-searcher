@@ -1,4 +1,23 @@
-# Validação — versão 0.2.6
+# Validação — versão 0.2.7
+
+## Workers de resolução — 14/10/2026
+
+- 259 testes passaram localmente em Windows/Python 3.12.14. Os 19 novos casos
+  verificam sobreposição real, persistência de resultados rápidos antes dos lentos,
+  SQLite no coordenador, fila limitada, interrupção e retomada sem repetir buscas,
+  equivalência de decisões/CSV/JSON/handoff entre 1 e 8 workers, retry de pendências,
+  recheck em cópia, cache simultâneo de páginas/erros e configuração da CLI.
+- O transporte HTTP foi verificado com dois hosts em paralelo, alias `www`
+  serializado, redirecionamentos cruzados sem deadlock, cancelamento de espera
+  por host e openers separados por thread. Não houve requisições reais.
+- Uma simulação offline com 80 hosts, dez queries e latência de 50 ms por GET
+  mediu 4,765 s com 1 worker e 1,141 s com 8 workers (4,18×). Ambas fizeram 80 GETs
+  sintéticos e confirmaram as mesmas 80 decisões. Isso demonstra sobreposição,
+  não estima o tempo de uma coleta real no VPS.
+- Ruff lint/formatação, instalação editável 0.2.7, dependências e ajuda da CLI/recheck
+  aprovados. Os limites de Apify, classificação e esquema
+  SQLite permanecem preservados; a versão do pacote é 0.2.7.
+- O estado remoto dos checks deve ser conferido no PR associado ao commit.
 
 ## Limite automático de páginas — 14/10/2026
 

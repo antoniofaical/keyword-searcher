@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.6
+# Arquitetura e contratos — 0.2.7
 
 ## Responsabilidade
 
@@ -24,9 +24,49 @@ própria, fonte editorial e conflitos de identidade; a normalização de URLs é
 | export.py | Validação de destino externo e escrita atômica por arquivo |
 | audit.py | Amostra offline, backup e correção explícita de estados editoriais |
 | pipeline.py | Iteração, retomada e rechecagem das páginas salvas |
+| workers.py | Resolução concorrente limitada e persistência no fluxo coordenador |
 
 O transporte é injetável. Testes de contrato usam dados sintéticos e não precisam
 de credenciais nem de buscas reais.
+
+## Concorrência dos sites
+
+CLI e recheck usam `--workers 8` por padrão; `--workers 1` não cria executor.
+As funções de baixo nível `run`/`recheck_sites` conservam o padrão sequencial para
+compatibilidade; os pontos de entrada passam a quantidade explicitamente.
+Threads executam somente `resolver.resolve`. Apify, leitura/gravação SQLite e
+exportação ficam no coordenador. Consultas e páginas continuam sendo percorridas
+em ordem; os resultados de cada página terminam em qualquer ordem e são gravados
+sem esperar os demais. Exportações conservam a ordenação query/URL do SQLite.
+
+Há no máximo N futures pendentes; hosts de origem são intercalados antes do envio.
+Um site lento ainda pode atrasar a conclusão de sua página. Esse limite evita
+enfileirar o corpus inteiro ou aumentar memória proporcionalmente ao corpus.
+
+Cada thread HTTP usa seu próprio opener. Uma Condition protege os slots ativos
+por hostname, normalizado e sem `www`; não é um limite por domínio registrável.
+O slot cobre validação DNS, abertura e leitura. Redirecionamentos liberam o slot
+anterior antes de disputar o destino, preservando validação de URL/DNS e o limite
+de seis operações. Hosts inativos não ficam guardados no limitador.
+
+O cache LRU e suas atualizações são protegidos por RLock. Uma Future por URL em
+carregamento compartilha a página ou o motivo de erro entre concorrentes. Futures
+são removidas após o carregamento; erros retêm somente texto, sem traceback.
+Os limites de 128 entradas/8 MiB continuam iguais. HTMLs BeautifulSoup publicados
+no cache são somente leitura para as políticas; futuras alterações não devem
+mutá-los. Resoluções completas não são compartilhadas entre fontes diferentes.
+
+Em interrupções, o cancelamento cooperativo impede novas inspeções/GETs e desperta
+esperas por host. O coordenador cancela futures não iniciadas, aguarda operações
+ativas e persiste decisões bem-sucedidas antes de exportar. Cancelamento não vira
+`pending` ou `skipped`; resultados sem decisão são retomados pelas buscas salvas.
+Não há encerramento forçado de threads: DNS e operações bloqueantes podem atrasar
+a parada. O timeout de 20 s é por operação HTTP, não um deadline de resolução.
+
+O progresso usa seu próprio RLock; callbacks dos workers apenas atualizam o
+terminal. Mostra contagem ativa, decisões contabilizadas e o tempo da resolução
+mais antiga, separado do tempo total. Quantidade de workers não entra na identidade
+do banco. A reavaliação continua usando cópia/backup e preserva o estado original.
 
 ## Persistência e migração
 

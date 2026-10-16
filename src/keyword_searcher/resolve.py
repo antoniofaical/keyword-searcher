@@ -1,6 +1,8 @@
 import json
 import re
+import threading
 from collections import OrderedDict
+from concurrent.futures import CancelledError, Future, TimeoutError
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
@@ -133,34 +135,71 @@ class WebsiteResolver:
     def __init__(self, http):
         self.http = http
         self.cache = OrderedDict()
+        self._cache_lock = threading.RLock()
+        self._loading = {}
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+        cancel = getattr(self.http, "cancel", None)
+        if callable(cancel):
+            cancel()
 
     def page(self, url):
-        if url in self.cache:
-            self.cache.move_to_end(url)
-            value = self.cache[url]
-            if isinstance(value, str):
-                raise DiscoveryError(value)
-            return value[:2]
+        if self._cancelled.is_set():
+            raise CancelledError()
+        with self._cache_lock:
+            if url in self.cache:
+                self.cache.move_to_end(url)
+                return self._cached_page(self.cache[url])
+            loading = self._loading.get(url)
+            owner = loading is None
+            if owner:
+                loading = self._loading[url] = Future()
+        if not owner:
+            while not self._cancelled.is_set():
+                try:
+                    return self._cached_page(loading.result(timeout=0.1))
+                except TimeoutError:
+                    continue
+            raise CancelledError()
         try:
-            value = self._page(url)
-        except DiscoveryError as exc:
-            # Never retain exception tracebacks (which hold HTTP bodies/frames).
-            self.cache[url] = str(exc)
-            self.trim_cache()
+            try:
+                value = self._page(url)
+            except DiscoveryError as exc:
+                # Share only the reason, never exception tracebacks/HTTP frames.
+                value = str(exc)
+            with self._cache_lock:
+                self.cache[url] = value
+                self.trim_cache()
+                loading.set_result(value)
+            return self._cached_page(value)
+        except BaseException:
+            if not loading.done():
+                loading.cancel()
             raise
-        self.cache[url] = value
-        self.trim_cache()
+        finally:
+            with self._cache_lock:
+                self._loading.pop(url, None)
+
+    @staticmethod
+    def _cached_page(value):
+        if isinstance(value, str):
+            raise DiscoveryError(value)
+        # Policy readers never mutate the cached BeautifulSoup tree.
         return value[:2]
 
     def trim_cache(self):
-        while (
-            len(self.cache) > 128
-            or sum(
-                len(value) if isinstance(value, str) else value[2] for value in self.cache.values()
-            )
-            > 8 * 1024 * 1024
-        ):
-            self.cache.popitem(last=False)
+        with self._cache_lock:
+            while (
+                len(self.cache) > 128
+                or sum(
+                    len(value) if isinstance(value, str) else value[2]
+                    for value in self.cache.values()
+                )
+                > 8 * 1024 * 1024
+            ):
+                self.cache.popitem(last=False)
 
     def _page(self, url):
         response = self.http.get(url)

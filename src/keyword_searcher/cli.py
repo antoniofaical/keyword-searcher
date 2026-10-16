@@ -56,6 +56,12 @@ def main(argv=None):
     parser.add_argument("--location", default="")
     parser.add_argument("--retry-pending", action="store_true")
     parser.add_argument(
+        "--workers",
+        type=positive,
+        default=8,
+        help="Concurrent site resolutions (default: 8; use 1 for sequential processing)",
+    )
+    parser.add_argument(
         "--max-apify-pages",
         type=positive,
         default=None,
@@ -136,7 +142,7 @@ def main(argv=None):
             ) as progress:
                 resolver = WebsiteResolver(http)
                 if args.recheck_sites:
-                    recheck_sites(queries, provider, resolver, store, progress)
+                    recheck_sites(queries, provider, resolver, store, progress, args.workers)
                 else:
                     run(
                         queries,
@@ -146,6 +152,7 @@ def main(argv=None):
                         args.max_pages,
                         args.retry_pending,
                         progress,
+                        args.workers,
                     )
         except KeyboardInterrupt:
             interrupted = True

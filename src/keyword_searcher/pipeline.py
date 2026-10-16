@@ -2,9 +2,17 @@ import json
 
 from .apify import ApifyRecoveryRequired
 from .models import BudgetExceeded, DiscoveryError
+from .workers import ResolutionWorkers
 
 
-def run(queries, provider, resolver, store, max_pages, retry_pending=False, progress=None):
+def run(
+    queries, provider, resolver, store, max_pages, retry_pending=False, progress=None, workers=1
+):
+    with ResolutionWorkers(resolver, workers, progress) as pool:
+        _run(queries, provider, pool, store, max_pages, retry_pending, progress)
+
+
+def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
     store.ensure_queries(queries)
     budget_exhausted = False
     budget_reason = "apify_page_limit"
@@ -37,19 +45,8 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
                     status = "incomplete"
                     store.progress(query, status, "repeated_results")
                     break
-                for result in new_results:
-                    cached = store.resolution(query, result.url)
-                    reused = cached is not None and not (
-                        retry_pending and cached.status == "pending"
-                    )
-                    if progress:
-                        progress.begin_result(result.url, reused)
-                    if cached is None or (retry_pending and cached.status == "pending"):
-                        cached = resolver.resolve(result)
-                        store.save_resolution(query, result.url, cached)
-                    seen.add(result.url)
-                    if progress:
-                        progress.end_result(cached)
+                pool.process(query, new_results, store, retry_pending=retry_pending)
+                seen.update(result.url for result in new_results)
                 if page.next_start is None:
                     status = page.end_status
                     store.progress(query, status, page.end_reason)
@@ -88,8 +85,13 @@ def run(queries, provider, resolver, store, max_pages, retry_pending=False, prog
                 progress.finish_query(status)
 
 
-def recheck_sites(queries, provider, resolver, store, progress=None):
+def recheck_sites(queries, provider, resolver, store, progress=None, workers=1):
     """Re-resolve stored organic results, making no search provider requests."""
+    with ResolutionWorkers(resolver, workers, progress) as pool:
+        _recheck_sites(queries, provider, pool, store, progress)
+
+
+def _recheck_sites(queries, provider, pool, store, progress):
     for index, query in enumerate(store.saved_queries(queries), start=1):
         if progress:
             progress.begin_query(index, query)
@@ -101,13 +103,7 @@ def recheck_sites(queries, provider, resolver, store, progress=None):
             results = [result for result in page.results if result.url not in seen]
             if progress:
                 progress.page_ready(len(results))
-            for result in results:
-                if progress:
-                    progress.begin_result(result.url, False)
-                resolution = resolver.resolve(result)
-                store.save_resolution(query, result.url, resolution)
-                seen.add(result.url)
-                if progress:
-                    progress.end_result(resolution)
+            pool.process(query, results, store, recheck=True)
+            seen.update(result.url for result in results)
         if progress:
             progress.finish_query("rechecked")
