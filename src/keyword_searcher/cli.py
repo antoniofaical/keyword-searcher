@@ -58,6 +58,11 @@ def main(argv=None):
     parser.add_argument("--location", default="")
     parser.add_argument("--retry-pending", action="store_true")
     parser.add_argument(
+        "--saved-searches-only",
+        action="store_true",
+        help="Use saved search pages only; never call Apify (website visits may still occur)",
+    )
+    parser.add_argument(
         "--workers",
         type=positive,
         default=8,
@@ -105,6 +110,10 @@ def main(argv=None):
             args.max_apify_pages = len(queries) * args.max_pages
         if args.apify_abandon_batch and args.apify_recover_run_id:
             raise DiscoveryError("Choose either --apify-abandon-batch or --apify-recover-run-id")
+        if args.saved_searches_only and (args.apify_abandon_batch or args.apify_recover_run_id):
+            raise DiscoveryError("--saved-searches-only cannot modify Apify run recovery state")
+        if args.saved_searches_only and not (args.run_dir / "state.sqlite").is_file():
+            raise DiscoveryError("--saved-searches-only requires an existing state.sqlite")
         config = dict(
             version=__version__,
             provider="apify-google",
@@ -132,7 +141,7 @@ def main(argv=None):
             args.apify_batch_size,
             args.apify_run_cost_limit_usd,
         )
-        if args.location and not args.recheck_sites:
+        if args.location and not (args.recheck_sites or args.saved_searches_only):
             raise DiscoveryError("Apify does not support --location; cached recheck is available")
         interrupted = False
         try:
@@ -155,6 +164,7 @@ def main(argv=None):
                         args.retry_pending,
                         progress,
                         args.workers,
+                        saved_searches_only=args.saved_searches_only,
                     )
         except KeyboardInterrupt:
             interrupted = True

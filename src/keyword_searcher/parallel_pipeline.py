@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from .apify import ApifyRecoveryRequired
 from .models import BudgetExceeded, DiscoveryError
+from .pagination import stop_on_repeated_page
 from .search_ahead import SearchAhead
 from .workers import WorkerFailure
 
@@ -20,7 +21,9 @@ class Cursor:
     closed: bool = False
 
 
-def run_parallel(queries, provider, pool, store, max_pages, retry_pending, progress):
+def run_parallel(
+    queries, provider, pool, store, max_pages, retry_pending, progress, *, saved_searches_only=False
+):
     store.ensure_queries(queries)
     cursors = [Cursor(query, index) for index, query in enumerate(queries, 1)]
     by_query = {cursor.query: cursor for cursor in cursors}
@@ -62,7 +65,14 @@ def run_parallel(queries, provider, pool, store, max_pages, retry_pending, progr
                     continue
                 payload = store.page(cursor.query, cursor.start)
                 if payload is None:
-                    if exhausted:
+                    if saved_searches_only:
+                        finish(
+                            cursor,
+                            "incomplete" if cursor.pages else "not_started",
+                            "saved_search_page_missing",
+                        )
+                        changed = True
+                    elif exhausted:
                         finish(
                             cursor,
                             "incomplete" if cursor.pages else "not_started",
@@ -95,7 +105,11 @@ def run_parallel(queries, provider, pool, store, max_pages, retry_pending, progr
                     cursor.pages += 1
                     if progress:
                         progress.page_ready(len(results))
-                    if page.results and not results:
+                    if (
+                        page.results
+                        and not results
+                        and stop_on_repeated_page(cursor.query, payload, page, store)
+                    ):
                         finish(cursor, "incomplete", "repeated_results")
                         continue
                     pool.process(cursor.query, results, store, retry_pending=retry_pending)

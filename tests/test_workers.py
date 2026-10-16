@@ -352,7 +352,7 @@ def test_worker_count_changes_without_changing_run_identity(tmp_path, monkeypatc
     queries.write_text("q", encoding="utf-8")
     observed = []
 
-    def process(*args):
+    def process(*args, **kwargs):
         observed.append(args[-1])
         args[3].progress("q", "complete")
 

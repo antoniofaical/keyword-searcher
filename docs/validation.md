@@ -1,4 +1,28 @@
-# Validação — versão 0.2.11
+# Validação — versão 0.2.12
+
+## Páginas repetidas e recuperação do estado APS — 16/10/2026
+
+- O usuário reportou sete consultas `incomplete/repeated_results` e uma com
+  `apify_search_page_failed`. Uma inspeção de leitura do banco no VPS encontrou
+  zero URLs sem decisão em cada uma das sete consultas (20, 16, 15, 12, 18, 19 e
+  14 páginas salvas, respectivamente). Não há evidência de sites adicionais
+  recuperáveis por esse motivo no corpus APS atual.
+- O pipeline parava em qualquer página sem novidade. A correção lê páginas Apify
+  posteriores já salvas e usa o estado terminal importado, sem resolver URLs
+  repetidas. Mantém a proteção legada e a incerteza de continuação sem sucessora.
+- Novo modo `--saved-searches-only`: sem chamadas Apify, sem modificar runs ou
+  reservas e sem revisitar decisões existentes por padrão. Páginas ausentes não
+  viram buscas pagas. O modo permite corrigir progresso e regenerar outputs.
+- 338 testes locais passaram, incluindo 16 novos casos: páginas intermediárias
+  repetidas seguidas por URLs novas, página terminal repetida, preservação de
+  cobertura incompleta e de erro explícito, sucessora ausente sem busca, execução
+  salva sem token, runs preservados, recusa de estado inexistente/flags de
+  recuperação e reprodução das sete consultas já resolvidas sem nenhum GET.
+- Esquema, políticas de decisão, handoff e comportamento de concorrência são
+  preservados. Não houve chamadas Apify nem visitas reais no desenvolvimento.
+  O efeito esperado no VPS é corrigir os sete estados; não ampliar os 268 sites.
+  As 4094 ocorrências pendentes precisam de diagnóstico próprio por motivo/URL.
+- Conferir os checks remotos associados ao commit antes da entrega.
 
 ## URLs Unicode e diagnóstico de workers — 16/10/2026
 

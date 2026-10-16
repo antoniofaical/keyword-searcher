@@ -2,19 +2,40 @@ import json
 
 from .apify import ApifyGoogle, ApifyRecoveryRequired
 from .models import BudgetExceeded, DiscoveryError
+from .pagination import stop_on_repeated_page
 from .parallel_pipeline import run_parallel
 from .workers import ResolutionWorkers, WorkerFailure
 
 
 def run(
-    queries, provider, resolver, store, max_pages, retry_pending=False, progress=None, workers=1
+    queries,
+    provider,
+    resolver,
+    store,
+    max_pages,
+    retry_pending=False,
+    progress=None,
+    workers=1,
+    *,
+    saved_searches_only=False,
 ):
     with ResolutionWorkers(resolver, workers, progress) as pool:
         execute = run_parallel if workers > 1 and isinstance(provider, ApifyGoogle) else _run
-        execute(queries, provider, pool, store, max_pages, retry_pending, progress)
+        execute(
+            queries,
+            provider,
+            pool,
+            store,
+            max_pages,
+            retry_pending,
+            progress,
+            saved_searches_only=saved_searches_only,
+        )
 
 
-def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
+def _run(
+    queries, provider, pool, store, max_pages, retry_pending, progress, *, saved_searches_only=False
+):
     store.ensure_queries(queries)
     budget_exhausted = False
     budget_reason = "apify_page_limit"
@@ -31,6 +52,10 @@ def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
         try:
             for page_index in range(max_pages):
                 payload = store.page(query, start)
+                if payload is None and saved_searches_only:
+                    status = "incomplete" if page_index else "not_started"
+                    reason = "saved_search_page_missing"
+                    break
                 if budget_exhausted and payload is None:
                     status = "incomplete" if page_index else "not_started"
                     reason = budget_reason
@@ -47,7 +72,11 @@ def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
                 new_results = [item for item in page.results if item.url not in seen]
                 if progress:
                     progress.page_ready(len(new_results))
-                if page.results and not new_results:
+                if (
+                    page.results
+                    and not new_results
+                    and stop_on_repeated_page(query, payload, page, store)
+                ):
                     status = "incomplete"
                     reason = "repeated_results"
                     break

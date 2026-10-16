@@ -78,6 +78,25 @@ permitir retomada de execuções existentes. Idioma de interface não é filtro 
 resultados. `--location` legado não é convertido para o UULE da Apify e só pode
 ser usado em `--recheck-sites`, para manter a configuração de um banco antigo.
 
+## Recuperar páginas salvas sem novas buscas
+
+Desde a 0.2.12, uma página Apify composta só de URLs já vistas não encerra a
+consulta quando a próxima página está salva. As URLs repetidas não são verificadas
+novamente; a cobertura terminal importada determina o estado final. Falhas
+explícitas de página continuam incompletas. A proteção `repeated_results` permanece
+para paginação legada e para uma continuação repetida sem página sucessora salva.
+
+Use `--saved-searches-only` para retomar o estado e regenerar os outputs sem
+chamar a Apify, inclusive sem token. Apenas URLs ainda sem decisão serão visitadas,
+salvo se você pedir `--retry-pending` ou `--recheck-sites`. Se uma página necessária
+não estiver salva, a consulta conserva cobertura parcial com
+`saved_search_page_missing`; o modo não busca uma substituição paga. Exige um
+`state.sqlite` existente e não combina com flags de recuperação/abandono de runs.
+
+Esse modo preserva decisões existentes, páginas, reservas e IDs de runs e pode
+corrigir estados antigos `repeated_results` sem acrescentar sites. Não se deve
+esperar aumento do corpus quando todas as URLs salvas já possuem decisão.
+
 ## Workers e progresso
 
 A verificação dos sites usa oito workers por padrão. Ajuste com `--workers N`;

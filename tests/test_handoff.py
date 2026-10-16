@@ -215,7 +215,7 @@ def test_cli_interruption_and_resume_automatically_export_handoff(tmp_path, monk
         "--no-progress",
     ]
 
-    def interrupt(_queries, _provider, _resolver, store, *_args):
+    def interrupt(_queries, _provider, _resolver, store, *_args, **_kwargs):
         store.save_resolution("q", "https://acme.example/product", confirmed("q", "source")[2])
         store.progress("q", "complete")
         raise KeyboardInterrupt
@@ -226,7 +226,7 @@ def test_cli_interruption_and_resume_automatically_export_handoff(tmp_path, monk
     assert select_sites(sites, None) == sites
     metadata = json.loads((output / "handoff.metadata.json").read_text(encoding="utf-8"))
     assert metadata["coverage"]["interrupted"] and metadata["coverage"]["partial"]
-    monkeypatch.setattr(cli, "run", lambda *_args: None)
+    monkeypatch.setattr(cli, "run", lambda *_args, **_kwargs: None)
     assert cli.main(argv) == 0
     assert json.loads((output / "handoff.json").read_text(encoding="utf-8")) == sites
     metadata = json.loads((output / "handoff.metadata.json").read_text(encoding="utf-8"))

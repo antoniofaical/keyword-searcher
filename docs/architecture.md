@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.11
+# Arquitetura e contratos — 0.2.12
 
 ## Responsabilidade
 
@@ -30,6 +30,7 @@ própria, fonte editorial e conflitos de identidade; a normalização de URLs é
 | search_ahead.py | Uma tarefa Apify em paralelo aos sites, sem SQLite na thread |
 | job_queue.py | Backlog temporário em disco, com seleção por host elegível |
 | worker_diagnostics.py | Contexto limitado de falhas fatais, sem mensagem bruta ou locals |
+| pagination.py | Continuação segura de páginas repetidas já importadas da Apify |
 
 O transporte é injetável. Testes de contrato usam dados sintéticos e não precisam
 de credenciais nem de buscas reais.
@@ -143,6 +144,20 @@ ficar incerta, só um ID recuperado explicitamente permite continuar. Não exist
 garantia de exactly-once na rede.
 
 ## Paginação e evidência de término
+
+Na 0.2.12, novidade de URLs e término da busca são conceitos separados. Uma página
+Apify repetida pode ser ignorada na resolução e a leitura avança se a sucessora já
+está salva. A página terminal, mesmo repetida, conserva `end_status`/`end_reason`
+importados; não há promoção automática de cobertura incompleta para completa.
+Paginação legada e continuações repetidas sem sucessora salva mantêm a proteção
+`repeated_results`. Nenhuma busca nova é iniciada para contornar essa proteção.
+
+`--saved-searches-only` impede qualquer chamada ao provider para payload ausente,
+nos caminhos sequencial e paralelo. Consultas ausentes ficam `not_started` e
+continuações ausentes ficam `incomplete`, com `saved_search_page_missing`.
+Outras consultas salvas continuam sendo processadas. O modo não modifica o estado
+de recuperação Apify, dispensa token e não entra na identidade semântica do banco.
+Decisões existentes são reutilizadas salvo opção explícita de retry/recheck.
 
 O dataset deve conter uma sequência contígua de posições por query, sem duplicatas
 de páginas válidas, e deve representar todas as queries do lote por dados ou erro
