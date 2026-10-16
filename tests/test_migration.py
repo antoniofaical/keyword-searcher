@@ -141,6 +141,8 @@ def test_export_rejects_installed_package_without_checkout(tmp_path, monkeypatch
     package.mkdir(parents=True)
     monkeypatch.setattr("keyword_searcher.export.__file__", str(package / "export.py"))
     monkeypatch.chdir(tmp_path)
+    # Model an installation without a checkout independently of the host's temp roots.
+    monkeypatch.setattr("keyword_searcher.export.checkout_roots", lambda path: ())
     with pytest.raises(DiscoveryError, match="installed package"):
         output_directory(package / "output")
     assert output_directory(tmp_path / "external") == tmp_path / "external"

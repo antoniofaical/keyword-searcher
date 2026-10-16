@@ -14,6 +14,8 @@ from .pipeline import recheck_sites, run
 from .progress import TerminalProgress
 from .resolve import WebsiteResolver
 from .store import Store
+from .worker_diagnostics import failure_exit_message
+from .workers import WorkerFailure
 
 
 def positive(value):
@@ -56,10 +58,17 @@ def main(argv=None):
     parser.add_argument("--location", default="")
     parser.add_argument("--retry-pending", action="store_true")
     parser.add_argument(
+        "--workers",
+        type=positive,
+        default=8,
+        help="Concurrent site resolutions (default: 8; use 1 for sequential processing)",
+    )
+    parser.add_argument(
         "--max-apify-pages",
         type=positive,
-        default=900,
-        help="Cumulative page reservations across Apify batches (default: 900)",
+        default=None,
+        help="Cumulative page reservations across Apify batches "
+        "(default: unique queries x --max-pages)",
     )
     parser.add_argument("--apify-batch-size", type=positive, default=20)
     parser.add_argument(
@@ -92,6 +101,8 @@ def main(argv=None):
         queries = read_queries(args.queries)
         if not queries:
             raise DiscoveryError("The queries file is empty")
+        if args.max_apify_pages is None:
+            args.max_apify_pages = len(queries) * args.max_pages
         if args.apify_abandon_batch and args.apify_recover_run_id:
             raise DiscoveryError("Choose either --apify-abandon-batch or --apify-recover-run-id")
         config = dict(
@@ -133,7 +144,7 @@ def main(argv=None):
             ) as progress:
                 resolver = WebsiteResolver(http)
                 if args.recheck_sites:
-                    recheck_sites(queries, provider, resolver, store, progress)
+                    recheck_sites(queries, provider, resolver, store, progress, args.workers)
                 else:
                     run(
                         queries,
@@ -143,11 +154,12 @@ def main(argv=None):
                         args.max_pages,
                         args.retry_pending,
                         progress,
+                        args.workers,
                     )
         except KeyboardInterrupt:
             interrupted = True
         finally:
-            report = export_results(store, args.output_dir)
+            report = export_results(store, args.output_dir, interrupted=interrupted)
         print(
             json.dumps(
                 {key: value for key, value in report.items() if key != "queries"},
@@ -157,10 +169,13 @@ def main(argv=None):
         )
         print(f"State: {args.run_dir / 'state.sqlite'}")
         print(f"Detailed coverage: {args.output_dir / 'report.json'}")
+        print(f"Classifier handoff: {args.output_dir / 'handoff.json'}")
         if interrupted:
             return 130
         incomplete = any(q["status"] != "complete" for q in report["queries"])
         return 2 if incomplete or report["pending"] else 0
+    except WorkerFailure as exc:
+        parser.exit(1, failure_exit_message(exc, args.output_dir))
     except (DiscoveryError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f"Error: {exc}\n")
     finally:

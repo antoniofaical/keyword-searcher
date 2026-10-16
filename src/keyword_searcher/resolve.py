@@ -1,10 +1,22 @@
 import json
 import re
+import threading
+from collections import OrderedDict
+from concurrent.futures import CancelledError, Future, TimeoutError
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
+from .identity import identity, name_key
 from .models import DiscoveryError, Resolution
+from .site_policy import (
+    INSTITUTION,
+    declared_source_kind,
+    interstitial,
+    known_source,
+    own_offer,
+    visible_text,
+)
 from .urls import normalize_url, same_host
 
 # These are source types, never filters on company age, market, activity or adherence.
@@ -44,6 +56,8 @@ ORG_TYPES = {
     "MedicalBusiness",
 }
 EDITORIAL_TYPES = {"NewsArticle", "Article", "BlogPosting", "Review", "ItemList"}
+NON_INSTITUTIONAL_REASONS = {"non_institutional_source", "editorial_or_listing_page"}
+POLICY_VERSION = 3
 
 
 def nodes(soup):
@@ -94,25 +108,7 @@ def evidence(soup, base):
 
 def home_name(soup, base):
     """Read self-declared identity on a homepage; conflict stays unresolved."""
-    organizations = {name for name, _ in evidence(soup, base)}
-    if len(organizations) > 1:
-        return None
-    if organizations:
-        return next(iter(organizations))
-    names = set()
-    for node in nodes(soup):
-        if "WebSite" in types(node) and isinstance(node.get("name"), str):
-            url = node.get("url")
-            if isinstance(url, str):
-                try:
-                    if same_host(normalize_url(urljoin(base, url)), base):
-                        names.add(" ".join(node["name"].split()))
-                except DiscoveryError:
-                    pass
-    for tag in soup.select('meta[property="og:site_name"][content]'):
-        names.add(" ".join(tag["content"].split()))
-    names.discard("")
-    return next(iter(names)) if len({name.casefold() for name in names}) == 1 else None
+    return identity(soup, base, nodes, types, ORG_TYPES)[0]
 
 
 def home_links(soup, base):
@@ -138,30 +134,152 @@ class WebsiteResolver:
 
     def __init__(self, http):
         self.http = http
+        self.cache = OrderedDict()
+        self._cache_lock = threading.RLock()
+        self._loading = {}
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+        cancel = getattr(self.http, "cancel", None)
+        if callable(cancel):
+            cancel()
 
     def page(self, url):
+        if self._cancelled.is_set():
+            raise CancelledError()
+        with self._cache_lock:
+            if url in self.cache:
+                self.cache.move_to_end(url)
+                return self._cached_page(self.cache[url])
+            loading = self._loading.get(url)
+            owner = loading is None
+            if owner:
+                loading = self._loading[url] = Future()
+        if not owner:
+            while not self._cancelled.is_set():
+                try:
+                    return self._cached_page(loading.result(timeout=0.1))
+                except TimeoutError:
+                    continue
+            raise CancelledError()
+        try:
+            try:
+                value = self._page(url)
+            except DiscoveryError as exc:
+                # Share only the reason, never exception tracebacks/HTTP frames.
+                value = str(exc)
+            with self._cache_lock:
+                self.cache[url] = value
+                self.trim_cache()
+                loading.set_result(value)
+            return self._cached_page(value)
+        except BaseException:
+            if not loading.done():
+                loading.cancel()
+            raise
+        finally:
+            with self._cache_lock:
+                self._loading.pop(url, None)
+
+    @staticmethod
+    def _cached_page(value):
+        if isinstance(value, str):
+            raise DiscoveryError(value)
+        # Policy readers never mutate the cached BeautifulSoup tree.
+        return value[:2]
+
+    def trim_cache(self):
+        with self._cache_lock:
+            while (
+                len(self.cache) > 128
+                or sum(
+                    len(value) if isinstance(value, str) else value[2]
+                    for value in self.cache.values()
+                )
+                > 8 * 1024 * 1024
+            ):
+                self.cache.popitem(last=False)
+
+    def _page(self, url):
         response = self.http.get(url)
+        final = normalize_url(response.url)
+        if excluded(final) or known_source(final):
+            raise DiscoveryError("non_institutional_source")
         if response.status != 200:
             raise DiscoveryError(f"site_http_{response.status}")
         if response.content_type not in {"text/html", "application/xhtml+xml"}:
             raise DiscoveryError("site_not_html")
-        if excluded(response.url) or EDITORIAL.search(urlsplit(response.url).path):
-            raise DiscoveryError("non_institutional_source")
         soup = BeautifulSoup(response.body, "html.parser")
-        if any(types(n) & EDITORIAL_TYPES for n in nodes(soup)):
-            raise DiscoveryError("editorial_or_listing_page")
-        return response.url, soup
+        problem = interstitial(final, soup)
+        if problem:
+            raise DiscoveryError(problem)
+        if declared_source_kind(soup):
+            raise DiscoveryError("non_institutional_source")
+        return final, soup, len(response.body.encode("utf-8"))
 
     def resolve(self, result):
+        inspected = []
+        details = {
+            "policy_version": POLICY_VERSION,
+            "source_url": result.url,
+            "inspected": inspected,
+        }
+
+        def decision(status, reason, name="", url=""):
+            return Resolution(status, name, url, reason, json.dumps(details, ensure_ascii=False))
+
+        def inspect(url):
+            if url not in inspected:
+                if len(inspected) >= 5:
+                    raise DiscoveryError("site_inspection_limit")
+                inspected.append(url)
+            return self.page(url)
+
         try:
             original = normalize_url(result.url)
-            if excluded(original) or EDITORIAL.search(urlsplit(original).path):
-                return Resolution("skipped", reason="non_institutional_source")
-            base, soup = self.page(original)
+            # Functional error parameters remain in the URL and cannot be exported.
+            if interstitial(original, BeautifulSoup("", "html.parser")):
+                return decision("pending", "site_error_page")
+            source_kind = known_source(original)
+            if excluded(original) or source_kind:
+                details["source_kind"] = source_kind or "intermediary"
+                return decision("skipped", "non_institutional_source")
+            access_error = None
+            try:
+                base, soup = inspect(original)
+                details["source_final_url"] = base
+            except DiscoveryError as exc:
+                access_error = str(exc)
+                # A homepage attempt can recover an inaccessible deep page, not a
+                # challenge, explicit error, unsafe destination or foreign redirect.
+                if access_error not in {
+                    "site_http_403",
+                    "site_http_429",
+                    "site_http_202",
+                    "site_http_203",
+                    "network_failure",
+                    "site_http_503",
+                    "response_too_large",
+                    "site_not_html",
+                }:
+                    raise
+                base, soup = original, BeautifulSoup("", "html.parser")
+                details["source_access_error"] = access_error
             candidates = evidence(soup, base)
-            if len(candidates) > 1:
-                return Resolution("pending", reason="missing_or_ambiguous_company_identity")
-            expected_name, declared = next(iter(candidates)) if candidates else (None, None)
+            source_name, source_signals, source_conflict = identity(
+                soup, base, nodes, types, ORG_TYPES
+            )
+            structured_identity = any(
+                s["context"] in {"organization", "website", "site_name"} for s in source_signals
+            )
+            if source_conflict and structured_identity:
+                details["identity_signals"] = source_signals
+                return decision("pending", "conflicting_company_identity")
+            expected_name, declared = sorted(candidates)[0] if candidates else (None, None)
+            if structured_identity:
+                expected_name = source_name
+                details["source_identity_signals"] = source_signals
             root = normalize_url(f"{urlsplit(base).scheme}://{urlsplit(base).netloc}/")
             # A declared locale root can be an institutional entrypoint; a product
             # page declaring itself is not a homepage, even with Organization JSON-LD.
@@ -172,46 +290,127 @@ class WebsiteResolver:
                 homes.append(declared)
             homes.extend(sorted(home_links(soup, base), key=len))
             homes.append(root)
-            checked = set()
             mismatch = False
+            unknown_offer = False
+            editorial = bool(EDITORIAL.search(urlsplit(base).path)) or any(
+                types(n) & EDITORIAL_TYPES for n in nodes(soup)
+            )
+            offer = own_offer(soup, base)
+            failures = {}
+            details["source_page_kind"] = "editorial" if editorial else "other"
+            checked = set()
             for url in homes:
                 if url in checked or not same_host(url, base):
                     continue
                 checked.add(url)
                 try:
-                    final, home = (base, soup) if url == base else self.page(url)
-                except DiscoveryError:
+                    final, home = inspect(url)
+                except DiscoveryError as exc:
+                    failures[url] = str(exc)
+                    details["access_failures"] = failures
+                    if str(exc) in NON_INSTITUTIONAL_REASONS:
+                        return decision("skipped", str(exc))
                     continue
                 # A redirect must still lead to the same institutional host.
                 if not same_host(final, base):
                     mismatch = True
                     continue
-                name = home_name(home, final)
+                name, signals, conflict = identity(home, final, nodes, types, ORG_TYPES)
+                details["identity_signals"] = signals
+                if conflict:
+                    return decision("pending", "conflicting_company_identity")
+                home_types = set().union(*(types(n) for n in nodes(home)))
+                if "NewsMediaOrganization" in home_types or re.search(
+                    r"editorial standards|independent news (?:site|publisher)",
+                    visible_text(home),
+                    re.I,
+                ):
+                    return decision("skipped", "non_institutional_source")
+                home_offer = own_offer(home, final)
+                usable_offer = home_offer or (offer if not editorial or expected_name else None)
+                offer_url = final if home_offer else base
+                if not usable_offer and (
+                    home_types
+                    & {"CollegeOrUniversity", "EducationalOrganization", "GovernmentOrganization"}
+                    or (name and INSTITUTION.search(name))
+                ):
+                    return decision("skipped", "non_provider_institution")
+                # At most one same-host About/contact page supplements weak metadata.
+                if not name:
+                    for anchor in home.select("a[href]"):
+                        label = anchor.get_text(" ", strip=True)
+                        if not re.match(
+                            r"^(about(?: [\w -]{1,60})?|company|sobre(?: nós)?|quem somos|contact(?: us)?)$",
+                            label,
+                            re.I,
+                        ):
+                            continue
+                        try:
+                            about_url = urljoin(final, anchor["href"])
+                            about_url = normalize_url(about_url)
+                            if not same_host(about_url, final) or about_url in inspected:
+                                continue
+                            about_final, about = inspect(about_url)
+                            if not same_host(about_final, final):
+                                break
+                            about_name, about_signals, about_conflict = identity(
+                                about, about_final, nodes, types, ORG_TYPES
+                            )
+                            if about_conflict:
+                                return decision("pending", "conflicting_company_identity")
+                            if about_name and any(
+                                name_key(s["name"]) == name_key(about_name) for s in signals
+                            ):
+                                name = about_name
+                                details["identity_signals"] = signals + about_signals
+                                details["identity_support_url"] = about_final
+                                about_offer = own_offer(about, about_final)
+                                usable_offer = about_offer or usable_offer
+                                if about_offer:
+                                    offer_url = about_final
+                        except DiscoveryError as exc:
+                            failures[about_url] = str(exc)
+                            details["access_failures"] = failures
+                        break
                 if not name:
                     continue
-                if expected_name and name.casefold() != expected_name.casefold():
+                expected_keys = {name_key(expected_name)} if expected_name else set()
+                for signal in source_signals:
+                    if signal["context"] in {"organization", "website", "site_name"}:
+                        expected_keys.update(name_key(a) for a in signal["aliases"])
+                home_keys = {name_key(name)}
+                for signal in signals:
+                    home_keys.update(name_key(a) for a in signal["aliases"])
+                if expected_name and not expected_keys & home_keys:
                     mismatch = True
                     continue
-                return Resolution(
-                    "confirmed",
-                    name,
-                    final,
-                    "homepage_identity_verified",
-                    json.dumps(
-                        {
-                            "name": name,
-                            "source_url": original,
-                            "declared_url": declared,
-                            "entrypoint": final,
-                        },
-                        ensure_ascii=False,
-                    ),
+                if not usable_offer:
+                    unknown_offer = True
+                    continue
+                details.update(
+                    name=name,
+                    entrypoint=final,
+                    declared_url=declared,
+                    source_kind="own_provider_site",
+                    offer_evidence=usable_offer,
+                    offer_source_url=offer_url,
                 )
-            return Resolution(
+                return decision("confirmed", "homepage_identity_verified", name, final)
+            if mismatch:
+                return decision("pending", "entrypoint_identity_mismatch")
+            if access_error:
+                return decision("pending", access_error)
+            if failures:
+                return decision("pending", next(iter(failures.values())))
+            if editorial and not offer and not unknown_offer:
+                return decision("skipped", "editorial_or_listing_page")
+            return decision(
                 "pending",
-                reason="entrypoint_identity_mismatch"
-                if mismatch
+                "provider_offer_unverified"
+                if unknown_offer
                 else "missing_or_ambiguous_company_identity",
             )
         except DiscoveryError as exc:
-            return Resolution("pending", reason=str(exc))
+            reason = str(exc)
+            status = "skipped" if reason in NON_INSTITUTIONAL_REASONS else "pending"
+            return decision(status, reason)

@@ -78,6 +78,62 @@ permitir retomada de execuções existentes. Idioma de interface não é filtro 
 resultados. `--location` legado não é convertido para o UULE da Apify e só pode
 ser usado em `--recheck-sites`, para manter a configuração de um banco antigo.
 
+## Workers e progresso
+
+A verificação dos sites usa oito workers por padrão. Ajuste com `--workers N`;
+`--workers 1` mantém a execução sequencial. Isso também vale para `--retry-pending`,
+`--recheck-sites` e `python -m keyword_searcher.recheck`. A quantidade de workers
+pode mudar na retomada do mesmo banco.
+
+Os sites de todas as consultas coletadas entram numa fila compartilhada. Desde a
+0.2.10, a leitura alterna entre consultas disponíveis, e o próximo lote Apify é
+preparado enquanto os workers verificam os sites dos lotes anteriores. Uma busca
+remota lenta também não impede processar consultas posteriores já salvas.
+O executor recebe até N tarefas; o restante fica numa fila temporária em disco,
+removida ao encerrar. Isso permite avançar além de muitos links de um mesmo host
+sem acumular seus payloads na memória. Páginas e decisões no estado permanente
+continuam sendo a referência para retomada.
+Links do mesmo host aguardam fora do executor enquanto esse host tem uma resolução
+ativa, liberando slots para outros hosts. `--workers 100` pode assim usar 100
+resoluções simultâneas quando existem hosts independentes prontos para processamento.
+Há no máximo uma requisição ativa por host, agrupando o alias `www`, inclusive
+nos redirecionamentos. O cache compartilhado evita baixar simultaneamente a mesma
+URL; decisões continuam sendo calculadas por resultado para preservar a evidência
+da fonte. Um único fluxo grava no SQLite, conforme as resoluções terminam.
+
+O terminal mostra workers ativos, links aguardando (`queued`), hosts livres na fila
+(`ready_hosts`), resultados contabilizados (`sites_done`),
+`total_elapsed` da execução e `site_elapsed` da resolução ativa mais antiga.
+Com vários workers, Pages e Results são contadores globais, sem reiniciar a cada
+consulta; Pages mostra posições lidas / limite, incluindo marcadores de falha.
+Uma consulta só termina quando todas as suas resoluções foram persistidas.
+Esses resultados não são empresas únicas. Uma linha `Apify:` mostra o lote sendo
+iniciado ou o run aguardado, mesmo com verificações locais em andamento. Há apenas
+um lote remoto em andamento; reservas de páginas e teto monetário por Actor continuam
+valendo. O próximo lote pode começar antes de terminar a verificação do anterior.
+Ctrl+C preserva o ID de uma criação já enviada; cancelar a espera local não aborta
+o Actor remoto. A retomada busca esse mesmo run, sem POST adicional.
+O número de workers é um teto: é preciso haver hosts independentes com links
+disponíveis. Cache, fase inicial da busca, CPU e fim do corpus também afetam a ocupação.
+
+Desde a 0.2.11, caminhos de URL com acentos, outros caracteres Unicode ou espaços
+são codificados antes do HTTP, incluindo links internos de About/contato e destinos
+de redirecionamento. Escapes existentes como `%C3%A7` e `%2F` são preservados.
+Uma falha inesperada de um worker paralelo interrompe a execução para revisão: a mensagem
+identifica tipo, etapa (`resolve`, `persist` ou `progress`) e site. O último erro
+fica em `worker_error.json` junto dos outputs, também no recheck em cópia. Esse
+diagnóstico contém query, localização do site, fingerprint da URL e frames de
+arquivo/linha/função; omite mensagens brutas, HTML, variáveis locais, userinfo,
+query string e fragmento. A presença do arquivo registra uma falha anterior, não
+indica que uma retomada posterior falhou. Retome usando o mesmo `run-dir`; decisões
+gravadas e IDs Apify são reaproveitados. Não é necessário abandonar o lote.
+
+Ctrl+C para o agendamento, cancela tarefas que ainda não começaram e salva
+resoluções concluídas. Operações de rede em andamento podem precisar terminar
+antes da exportação parcial; o timeout HTTP de 20 segundos por operação não é
+um prazo global para resolver um site. Retome com o mesmo comando e diretórios.
+Os limites Apify, as regras de identidade e o contrato do handoff permanecem iguais.
+
 ## Apify, limites e retomada
 
 Apify é o único provedor de buscas novas. `--provider apify` continua aceito por
@@ -92,7 +148,13 @@ no resolvedor local.
 `--max-apify-pages` limita a reserva cumulativa de páginas no diretório. Cada
 lote reserva antecipadamente queries × `--max-pages`; o tamanho do lote se ajusta
 ao orçamento restante de páginas. A reserva pode ser maior
-que o número de páginas efetivamente recebido. O padrão é 900 páginas.
+que o número de páginas efetivamente recebido. O argumento é opcional: quando
+omitido, o limite é o número de queries únicas no arquivo × `--max-pages`, após
+remover linhas vazias e repetidas. Por exemplo, 26 queries com `--max-pages 10`
+permitem reservar até 260 páginas. Um valor explícito, como
+`--max-apify-pages 100`, mantém esse limite mesmo quando não cobre todas as queries.
+Na retomada, as reservas anteriores continuam contando dentro do limite calculado;
+lotes abandonados também contam e podem exigir um limite explícito maior.
 `--apify-run-cost-limit-usd` envia um teto de cobrança por Actor à Apify,
 com padrão de US$ 1. **Esse teto não limita o gasto total de vários lotes.**
 Os limites dos exemplos não aprovam um orçamento.
@@ -117,6 +179,15 @@ o mesmo lote novamente exige pelo menos `--max-apify-pages 190`. Isso é um limi
 cumulativo local; o teto monetário por Actor permanece o valor configurado.
 
 A importação valida todo o dataset e salva páginas e cobertura numa transação.
+Registros explícitos `#error: true` com `#debug.url` reconhecível são associados à
+query e à página que falhou. As páginas válidas do lote são aproveitadas; a query
+afetada fica `incomplete/apify_search_page_failed`. O relatório registra
+`failed_pages`, `last_page` e os erros em `apify_runs[].search_errors`, sem salvar
+stack traces. `apify_pages` conta somente páginas válidas. Falhas intermediárias
+não impedem o processamento de páginas posteriores presentes no dataset.
+Erros sem associação confiável, queries ausentes e lacunas sem explicação
+continuam bloqueando a importação inteira. A retomada lê o mesmo run salvo e não
+inicia outra busca para preencher falhas; não é necessário abandonar o lote.
 Uma página com dez links não comprova continuação. Não há outro Actor automático
 para procurar uma página ausente. Cobertura sem evidência suficiente fica
 `incomplete`: isso pode ocorrer mesmo após um run `SUCCEEDED`, quando custos
@@ -176,26 +247,82 @@ preservados; fragmentos e parâmetros conhecidos de rastreamento são removidos.
 ## O que significa confirmado nesta versão
 
 A resolução é **heurística e conservadora**, baseada na identidade declarada
-pelo próprio site (JSON-LD `Organization`/`WebSite` ou `og:site_name` na home).
+pelo próprio site e em sinais de oferta própria de produtos ou serviços.
 O nome não é adivinhado a partir do domínio ou do título de busca.
 
-1. Inspeciona a página encontrada, exceto fontes intermediárias reconhecidas e
-   caminhos editoriais identificados.
-2. Procura uma única organização com nome e URL no mesmo host (aceitando `www`).
+1. Classifica plataformas reconhecidas de publicação, pesquisa, financiamento e
+   diretórios antes de acessá-las. Um domínio `.org` ou `.edu` não é veto.
+2. Inspeciona a página encontrada. Marcação `Article`, `Review` ou `ItemList` e
+   caminho de blog não descartam automaticamente um fornecedor com home própria.
 3. Verifica a home do mesmo host ou um link explícito de home/logo; um URL de
    produto que declara a si mesmo não se torna automaticamente um entrypoint.
-4. Compara a identidade da home com a declarada na página encontrada, se houver.
-5. Exporta o endereço final após redirecionamentos. Ausência ou conflito de
-   evidências produz pendência, nunca um nome inventado.
+4. Compara `Organization`, `WebSite`, `og:site_name` e copyright. Conflitos entre
+   marca e agência geram pendência. Sufixos jurídicos usuais e `alternateName`
+   explícito permitem comparar nomes sem consolidar marcas por domínio.
+   Na 0.2.4, isso inclui AG, ApS, GmbH e outras formas usuais. Slogans delimitados
+   em `WebSite`/`og:site_name` ou copyright só são removidos para comparação se o
+   prefixo completo concordar com outro nome declarado; `Organization` não é truncado.
+   Copyright é lido em avisos de propriedade no rodapé, excluindo SVGs, créditos
+   em artigos, links de política e licenças de fontes.
+5. Na ausência de metadata, exige concordância entre contextos diferentes:
+   título, logo, copyright ou autodescrição visível. Pode consultar uma página
+   institucional About/contato do mesmo host para apoiar a identidade da home.
+6. Exige sinais de oferta própria, como menu de produtos/serviços no mesmo host,
+   planos de assinatura ou solicitação de demonstração. Pesquisa acadêmica,
+   publicação ou identidade isolada não bastam. Um instituto com serviços
+   próprios pode ser confirmado; isso não afirma que seja startup ou empresa privada.
+   Frases como “our service” em cookies/rodapés não contam como oferta. Identidade
+   explícita de portal de pesquisa ou fonte editorial prevalece sobre menus genéricos.
+7. Exporta o endereço institucional final. Erros funcionais na URL, páginas de
+   login, bloqueio e desafios ficam pendentes, mesmo com metadata de marca.
 
-As páginas inspecionadas por resultado são limitadas à origem, home declarada,
-link explícito de home/logo e raiz do host. Não há crawling recursivo ou execução
+As páginas inspecionadas por resultado são limitadas a cinco, incluindo origem,
+homes e uma página de apoio por home, dentro desse limite. Um cache de até 128
+páginas/erros e 8 MiB de conteúdo HTML evita repetir acessos na mesma execução
+(o HTML analisado ocupa memória adicional). Não há crawling recursivo ou execução
 de JavaScript. Sites dependentes de JavaScript, sem identidade verificável na
 home, protegidos por CAPTCHA ou com identidades complexas
 podem ficar pendentes. Não é uma verificação jurídica da empresa: metadata pode
 estar errada. O reconhecimento de fontes intermediárias também é heurístico;
 diretórios desconhecidos podem produzir falsos positivos. É necessário medir
-precisão e cobertura numa amostra real antes do uso em escala.
+precisão e cobertura numa amostra real antes do uso em escala. Um HTTP 403 na
+página profunda permite tentar a home do mesmo host; a falha original permanece
+na evidência. Não há bypass de CAPTCHA ou autenticação. HTTP 202/203 não são
+tratados como HTML válido; o reconhecimento prévio de PubMed evita confundi-lo
+com fornecedor. Um banner comum de cookies não bloqueia uma página válida.
+
+As decisões registram versão da política, URLs inspecionadas, sinais de identidade,
+oferta e falhas em `Resolution.evidence` no SQLite e em `pending.json` para decisões
+não confirmadas. O CSV mantém exatamente `CompanyName;URL;SearchQuery`.
+
+## Reavaliar o piloto com as novas regras
+
+Com o processo anterior encerrado, execute:
+
+```bash
+python -m keyword_searcher.recheck --run-dir ../keyword-searcher-data/runs/pilot --output-dir ../keyword-searcher-data/rechecks/pilot_v2
+```
+
+A pasta de saída deve ser nova e externa ao repositório. O comando não exige
+queries, token ou repetição das opções da busca. Valida as páginas salvas, faz um
+backup consistente `state-before.sqlite` e reavalia uma cópia `state.sqlite`.
+O banco original permanece intacto. Revisita resultados confirmados, pendentes
+e descartados usando apenas GETs dos sites; não instancia transporte Apify,
+não inicia Actor nem solicita novos resultados do Google.
+
+Gera `companies.csv`, `pending.json`, `report.json`, `handoff.json`,
+`handoff.metadata.json`, `recheck_summary.json` e
+`recheck_changes.json`. O último registra decisões anteriores e atuais por
+query/URL. Queries, páginas, progresso, configuração, IDs de runs e reservas são
+copiados sem alterações. Auditorias e campos de revisão humana existentes não
+são sobrescritos. Para continuar usando as novas decisões na CLI principal,
+aponte `--run-dir` para essa nova pasta e conserve as opções originais de busca.
+
+Ctrl+C exporta o estado parcial e retorna 130. Para repetir a reavaliação,
+use a pasta da cópia parcial como `--run-dir` e escolha outra pasta de saída.
+O comando reavalia novamente todos os sites salvos. Código 0 indica que a
+reavaliação terminou, mesmo quando permanecem pendências ou buscas limitadas.
+O banco continua contendo somente a cobertura coletada anteriormente.
 
 O estado `complete` exige evidência de encerramento: run bem-sucedido,
 saída zero, custo abaixo do teto e fila sem pendências, com contagem de requisições
@@ -214,6 +341,119 @@ Códigos de saída: `0` sem consultas incompletas nem resoluções pendentes; `2
 limites, falhas ou pendências; `130` interrupção; `1` erro de configuração/arquivo.
 Resultados ignorados por tipo de fonte não são pendências de resolução.
 
+## Auditoria offline e correção de pendências editoriais
+
+Na versão 0.2.2, páginas reconhecidas como editoriais ou fontes intermediárias
+recebem `skipped`. Falhas HTTP e identidade ausente continuam `pending`; os
+critérios de identidade e relevância daquela versão não foram ampliados.
+Na 0.2.3, prefira a reavaliação acima para aplicar a política nova; a correção
+offline abaixo só altera o estado de motivos antigos e não reexamina evidências.
+
+Com a execução principal encerrada, gere uma amostra dos resultados salvos:
+
+```bash
+python3 -m keyword_searcher.audit --run-dir ../keyword-searcher-data/runs/pilot --output-dir ../keyword-searcher-data/audits/pilot_v1 --sample-size 20
+```
+
+O modo padrão só lê o banco. Para corrigir decisões antigas já marcadas com
+`editorial_or_listing_page` ou `non_institutional_source`, acrescente
+`--reclassify-editorial`. Antes da atualização, a ferramenta cria um backup
+consistente em `state-before.sqlite` na pasta da auditoria. Apenas o estado dessas
+pendências muda para `skipped`; IDs, queries, páginas, reservas, progresso e
+demais decisões são preservados. Esse comando exige banco de esquema 2 e não o migra.
+
+Não há requisições a sites nem ao Apify, e não é necessário token. A pasta de
+auditoria deve ser externa ao repositório e ainda não existir. Para gerar outra
+amostra, escolha outra pasta; isso preserva revisões humanas anteriores.
+
+São selecionadas até 20 URLs por motivo, agrupando queries que encontraram a
+mesma URL e priorizando hosts distintos. O padrão cobre identidade ausente,
+HTTP 403, páginas editoriais, HTTP 203 e fontes intermediárias ainda pendentes.
+`--sample-size` altera o limite por motivo; `--seed` fixa a seleção reproduzível
+(padrão 42). A amostra é diagnóstica, não uma estimativa de prevalência.
+
+`audit_cases.csv` contém IDs estáveis, URLs, queries, títulos/snippets da busca e
+estados antes/depois. `ReviewOutcome` e `ReviewerNotes` ficam vazios para revisão
+humana. `audit_summary.json` informa as contagens e correções. A mesma pasta
+recebe cópias atualizadas de `companies.csv`, `pending.json` e `report.json`;
+as exportações antigas permanecem como estavam.
+
+`audit_bundle.zip` reúne esses cinco arquivos CSV/JSON e os dois arquivos de
+handoff para revisão. O SQLite e
+seu backup ficam fora do ZIP. Uma auditoria bem-sucedida retorna código 0 mesmo
+quando há pendências, pois esse código informa a geração do pacote, não a
+conclusão da descoberta.
+
+## Handoff para startup-adherence
+
+A partir da versão 0.2.5, cada exportação gera automaticamente `handoff.json`
+e `handoff.metadata.json` junto ao CSV e aos relatórios, fora do repositório.
+Isso vale para execução normal, retomada, Ctrl+C, recheck e auditoria.
+As regras de confirmação e o CSV de três colunas continuam os mesmos.
+
+`handoff.json` é uma lista UTF-8 sem BOM, diretamente compatível com
+`startup-adherence --sites-file`:
+
+```json
+[
+  {"name": "Synthetic Supplier", "url": "https://supplier.example.org/"}
+]
+```
+
+O exemplo é sintético. Só resoluções confirmadas entram na lista, usando o
+entrypoint institucional salvo. Pendentes e descartadas ficam no output atual.
+O handoff conserva a primeira ocorrência na ordenação por query/URL descoberta,
+deduplicando por nome exato ou URL equivalente conforme o receptor. HTTP/HTTPS,
+`www`, parâmetros e barras finais não distinguem URLs equivalentes; outros
+caminhos e subdomínios distinguem, mas o mesmo nome ainda conserva apenas a
+primeira URL. Não há escolha automática por aderência nem fusão por similaridade.
+
+`handoff.metadata.json` registra versão de contrato, produtor, receptor,
+contagens, estado das queries e, por candidato, todas as queries, URLs
+descobertas, decisões/evidências salvas e URLs/nomes alternativos. Os campos
+`coverage.search_complete`, `coverage.interrupted` e `coverage.partial`
+distinguem encerramento da busca, interrupção da exportação atual e pendências
+ou cobertura parcial. Limite de páginas não é conclusão exaustiva. O contador
+`duplicates` usa ocorrências confirmadas do banco, não linhas do CSV.
+
+O consumidor conserva uma única URL por nome e seu crawl não inclui outros
+subdomínios por padrão. As alternativas do manifesto precisam de revisão
+quando forem importantes para cobertura. Nomes diferentes que colidem no
+diretório de evidência do receptor, nomes inválidos ou URLs incompatíveis geram
+erro antes de substituir os outputs. O estado fica salvo para revisão e nova
+exportação; nomes não são renomeados silenciosamente. Zero confirmados produz
+`[]`; o consumidor deve verificar a contagem antes de iniciar (`No sites selected`).
+
+Para gerar o handoff de um estado já existente, sem visitar sites ou fazer
+buscas, use o exportador offline:
+
+```bash
+python -m keyword_searcher.export --run-dir ../keyword-searcher-data/rechecks/pilot_v3 --output-dir ../keyword-searcher-data/handoffs/pilot_v3
+```
+
+Ele abre `state.sqlite` somente para leitura, sem migrar o banco, e regenera os
+cinco outputs. Pode substituir esses arquivos regeneráveis na pasta de saída;
+arquivos de revisão humana, queries, páginas, IDs e decisões do banco não são
+alterados. Código 0 informa exportação concluída, mesmo se o manifesto indicar
+pendências/limites. Destino dentro do checkout é recusado.
+
+O perfil de aderência é selecionado separadamente. O comando seguinte é
+ilustrativo e exige um perfil aprovado já existente:
+
+```bash
+startup-adherence --mode crawl --sites-file ../keyword-searcher-data/handoffs/pilot_v3/handoff.json --profile /caminho/perfil-aprovado.json --evidence-root ../keyword-searcher-data/evidence/pilot_v3
+```
+
+Gerar o handoff não inicia crawl, Jev, DeepL nem outra busca Apify. A classificação
+é uma etapa posterior. Sem `--profile`, o receptor usa digital twins; esse
+padrão não deve ser adotado automaticamente para outro tema. O modo padrão do
+receptor é `smoke`, que inclui classificação paga após confirmação; especifique
+`--mode crawl` para apenas coletar evidência pública.
+
+Contrato verificado no receptor em
+[`dbd6c4c`, `select_sites`](https://github.com/antoniofaical/startup-theme-adherence-classifier-jev/blob/dbd6c4cc4fb35bb820205b500b2bdf67eb84b34b/src/startup_adherence/cli.py#L141-L199).
+Veja [o contrato de handoff](docs/handoff.md) para o manifesto e a validação offline.
+
 ## Desenvolvimento
 
 ```powershell
@@ -225,3 +465,7 @@ python -m ruff format --check .
 Veja [arquitetura e contratos](docs/architecture.md) e
 [estado da validação](docs/validation.md). Testes usam empresas/domínios fictícios
 explicitamente sintéticos. Não representam um piloto de mercado.
+
+O [fluxo de contribuição](CONTRIBUTING.md) descreve branches a partir de `main`
+e squash merge após validação. A [auditoria de 16/10/2026](docs/code-audit-2026-10-16.md)
+registra os achados de código e a consolidação dos PRs encadeados.
