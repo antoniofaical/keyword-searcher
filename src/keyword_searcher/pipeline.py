@@ -51,7 +51,7 @@ def _run(queries, provider, pool, store, max_pages, retry_pending, progress):
                     status = page.end_status
                     store.progress(query, status, page.end_reason)
                     break
-                if not page.results:
+                if not page.results and not page.search_error:
                     status = "incomplete"
                     store.progress(query, status, "empty_page_with_next")
                     break

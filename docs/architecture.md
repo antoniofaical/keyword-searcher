@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.7
+# Arquitetura e contratos — 0.2.8
 
 ## Responsabilidade
 
@@ -15,6 +15,7 @@ própria, fonte editorial e conflitos de identidade; a normalização de URLs é
 | models.py | Contratos de busca, resolução e cobertura terminal |
 | cli.py | Configuração, diretórios explícitos, composição e códigos de saída |
 | apify.py | Actor, reserva de páginas, recuperação, dataset e evidência de término |
+| apify_errors.py | Associação de registros explícitos de falha à query/página |
 | search.py | Leitura de payloads SerpApi antigos; nenhuma integração remota |
 | http.py / urls.py | HTTP limitado, normalização e verificação de destinos |
 | resolve.py | Identidade declarada e seleção limitada do entrypoint |
@@ -97,9 +98,35 @@ garantia de exactly-once na rede.
 
 ## Paginação e evidência de término
 
-O dataset deve conter uma sequência contígua de páginas por query, sem duplicatas,
-e deve representar todas as queries do lote. Toda a validação precede uma transação
+O dataset deve conter uma sequência contígua de posições por query, sem duplicatas
+de páginas válidas, e deve representar todas as queries do lote por dados ou erro
+explícito reconhecido. Toda a validação precede uma transação
 que importa as páginas e grava cobertura, evidência do run e conclusão do lote.
+
+A versão 0.2.8 reconhece `#error: true` com `#debug` de GET para `/search` em
+host Google reconhecido. `q` precisa identificar exatamente uma query do lote;
+`start` deve ser não negativo, múltiplo de dez e resultar em página dentro do
+limite. Parâmetros duplicados, credenciais, origem estranha e divergência com
+`searchQuery` são rejeitados. Mensagens/stack traces arbitrários não são guardados.
+Persistem somente query, página, motivo, retry count e request ID validado.
+
+Uma falha mapeada preenche a posição ausente com um marcador `search_error`,
+com lista de resultados vazia, motivo explícito e cobertura incompleta. Esse
+marcador não representa uma página coletada: fica fora de `apify_pages` e não
+vira resolução de empresa. Ele permite atravessar uma falha intermediária e
+processar as páginas posteriores já entregues. A cobertura expõe `pages` como
+quantidade de páginas válidas, `last_page` como última posição e `failed_pages`.
+Erro e sucesso na mesma posição preservam os dados válidos e divulgam o erro;
+erros repetidos não criam outra posição. A query continua conservadoramente
+incompleta. Erros de outra query/origem e lacunas sem erro explícito bloqueiam
+tudo antes da transação. Um lote somente com erros nunca é declarado completo.
+
+Evidência do run adiciona `dataset_records`, `search_errors` e `completion_reason`.
+O número de registros do dataset inclui erros, enquanto o número de páginas
+válidas não inclui marcadores. Lotes são concluídos localmente após essa importação
+validada, preservando ID/reservas. Repetir a execução não procura páginas faltantes
+nem recria Actors; recheck/export leem também os marcadores sem novas buscas.
+O esquema SQLite continua 2 e os formatos CSV/handoff não mudam.
 
 Uma página com dez links não cria uma continuação. A próxima página precisa
 existir no dataset. O offset local Apify é uma chave derivada do número de página,
@@ -107,7 +134,9 @@ não uma promessa sobre a quantidade de resultados.
 
 Para classificar uma query como completa, a política exige run `SUCCEEDED`,
 exit code zero, custo finito abaixo do teto, fila sem pendências e contagem de
-requisições tratadas igual à quantidade de registros importados. A API é relida
+requisições tratadas igual à quantidade de registros do dataset, incluindo erros.
+Uma query com registro de falha nunca é completa, mesmo com essa evidência válida.
+A API é relida
 dez segundos após o primeiro sucesso, pois custos e stats podem ser preliminares.
 É uma política conservadora: alterações na implementação do Actor podem produzir
 `apify_completion_unverified`, mesmo com resultados úteis. Essa situação não

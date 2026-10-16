@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .apify_errors import SEARCH_ERROR, mapped_error
 from .models import BudgetExceeded, DiscoveryError, SearchPage, SearchResult
 from .search import parse_legacy
 
@@ -248,7 +249,14 @@ class ApifyGoogle:
             or not isinstance(reason, str)
         ):
             raise DiscoveryError("apify_invalid_coverage")
-        return SearchPage(results, start + 10 if payload["has_next"] else None, status, reason)
+        search_error = payload.get("search_error", False)
+        if type(search_error) is not bool or (
+            search_error and (rows or status != "incomplete" or reason != SEARCH_ERROR)
+        ):
+            raise DiscoveryError("apify_invalid_search_error")
+        return SearchPage(
+            results, start + 10 if payload["has_next"] else None, status, reason, search_error
+        )
 
     def search(self, query, start):
         open_batch = self.store.apify_open_batch()
@@ -301,8 +309,20 @@ class ApifyGoogle:
         if not isinstance(evidence, dict) or not valid_id(evidence.get("dataset_id")):
             raise ApifyRecoveryRequired("apify_missing_completion_evidence")
         discovered = {}
+        failures = {}
+        error_records = []
+        dataset_records = 0
         allowed = set(batch_queries)
         for item in self.transport.items(evidence["dataset_id"]):
+            dataset_records += 1
+            if isinstance(item, dict) and item.get("#error") is True:
+                try:
+                    error = mapped_error(item, allowed, self.max_pages)
+                except DiscoveryError as exc:
+                    raise ApifyRecoveryRequired(str(exc)) from exc
+                failures[error["query"], error["page"]] = error
+                error_records.append(error)
+                continue
             if not isinstance(item, dict) or not isinstance(item.get("searchQuery"), dict):
                 raise ApifyRecoveryRequired("apify_missing_search_query")
             term, page = item["searchQuery"].get("term"), item["searchQuery"].get("page")
@@ -318,12 +338,13 @@ class ApifyGoogle:
             if (term, page) in discovered:
                 raise ApifyRecoveryRequired("apify_duplicate_query_page")
             discovered[term, page] = item
-        if not discovered:
+        positions = set(discovered) | set(failures)
+        if not positions:
             raise ApifyRecoveryRequired("apify_empty_dataset")
-        if any((term, 1) not in discovered for term in batch_queries):
+        if any((term, 1) not in positions for term in batch_queries):
             raise ApifyRecoveryRequired(f"Apify run {run_id} omitted queries; inspect its dataset")
         for term in batch_queries:
-            pages = sorted(page for q, page in discovered if q == term)
+            pages = sorted(page for q, page in positions if q == term)
             if pages != list(range(1, pages[-1] + 1)):
                 raise ApifyRecoveryRequired("apify_missing_intermediate_page")
             # Old mixed runs have no reliable offset mapping.
@@ -332,36 +353,56 @@ class ApifyGoogle:
                 for _, raw in self.store.saved_pages(term)
             ):
                 raise ApifyRecoveryRequired("apify_legacy_offset_mapping_unverified")
-        reason = completion_reason(evidence, len(discovered))
+        reason = completion_reason(evidence, dataset_records)
+        evidence = dict(
+            evidence,
+            dataset_records=dataset_records,
+            search_errors=error_records,
+            completion_reason=reason,
+        )
         coverage = {}
         for term in batch_queries:
-            last = max(page for q, page in discovered if q == term)
-            if reason:
+            last = max(page for q, page in positions if q == term)
+            failed_pages = sorted(page for q, page in failures if q == term)
+            if failed_pages:
+                status, end_reason = "incomplete", SEARCH_ERROR
+            elif reason:
                 status, end_reason = "incomplete", reason
             elif last == self.max_pages:
                 status, end_reason = "limited", "max_pages"
             else:
                 status, end_reason = "complete", ""
             coverage[term] = {
-                "pages": last,
+                "pages": sum(q == term for q, _page in discovered),
+                "last_page": last,
+                "failed_pages": failed_pages,
                 "status": status,
                 "reason": end_reason,
                 "run_id": run_id,
             }
         pages = []
-        for (term, page), item in sorted(discovered.items()):
+        for term, page in sorted(positions):
+            item = discovered.get((term, page))
             summary = coverage[term]
             payload = {
                 "provider": "apify-google",
-                "organicResults": item["organicResults"],
-                "has_next": (term, page + 1) in discovered,
+                "organicResults": item["organicResults"] if item is not None else [],
+                "has_next": (term, page + 1) in positions,
                 "end_status": summary["status"],
                 "end_reason": summary["reason"],
                 "searchQuery": {"term": term, "page": page},
             }
+            if item is None:
+                payload["search_error"] = True
             self.parse(payload, (page - 1) * 10)
             pages.append((term, (page - 1) * 10, payload))
         self.store.apify_import_batch(batch_id, pages, coverage, evidence)
+        if error_records:
+            print(
+                f"Apify: imported {len(discovered)} search pages; "
+                f"{len(error_records)} error records; affected queries remain incomplete",
+                file=sys.stderr,
+            )
         result = self.store.page(query, start)
         if result is None:
             raise DiscoveryError("apify_missing_requested_page")

@@ -147,6 +147,15 @@ o mesmo lote novamente exige pelo menos `--max-apify-pages 190`. Isso é um limi
 cumulativo local; o teto monetário por Actor permanece o valor configurado.
 
 A importação valida todo o dataset e salva páginas e cobertura numa transação.
+Registros explícitos `#error: true` com `#debug.url` reconhecível são associados à
+query e à página que falhou. As páginas válidas do lote são aproveitadas; a query
+afetada fica `incomplete/apify_search_page_failed`. O relatório registra
+`failed_pages`, `last_page` e os erros em `apify_runs[].search_errors`, sem salvar
+stack traces. `apify_pages` conta somente páginas válidas. Falhas intermediárias
+não impedem o processamento de páginas posteriores presentes no dataset.
+Erros sem associação confiável, queries ausentes e lacunas sem explicação
+continuam bloqueando a importação inteira. A retomada lê o mesmo run salvo e não
+inicia outra busca para preencher falhas; não é necessário abandonar o lote.
 Uma página com dez links não comprova continuação. Não há outro Actor automático
 para procurar uma página ausente. Cobertura sem evidência suficiente fica
 `incomplete`: isso pode ocorrer mesmo após um run `SUCCEEDED`, quando custos
