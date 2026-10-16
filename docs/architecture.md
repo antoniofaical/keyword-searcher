@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.10
+# Arquitetura e contratos — 0.2.11
 
 ## Responsabilidade
 
@@ -29,6 +29,7 @@ própria, fonte editorial e conflitos de identidade; a normalização de URLs é
 | parallel_pipeline.py | Leitura alternada de queries e alimentação global dos workers |
 | search_ahead.py | Uma tarefa Apify em paralelo aos sites, sem SQLite na thread |
 | job_queue.py | Backlog temporário em disco, com seleção por host elegível |
+| worker_diagnostics.py | Contexto limitado de falhas fatais, sem mensagem bruta ou locals |
 
 O transporte é injetável. Testes de contrato usam dados sintéticos e não precisam
 de credenciais nem de buscas reais.
@@ -72,6 +73,19 @@ o ID, ou mantém-se o lote incerto sem retry automático. Na espera por um run, 
 cancelamento interrompe apenas os GETs locais, sem abortar o Actor. A retomada usa
 o run salvo. Uma chamada de rede bloqueante ainda pode atrasar a parada até seu
 timeout (60 s por chamada Apify). O caminho `--workers 1` continua sequencial.
+
+Desde a 0.2.11, falhas do worker paralelo identificam a etapa de resolução, persistência ou
+progresso. A CLI de busca e a de recheck gravam `worker_error.json` atomicamente
+junto dos outputs, com tipo, query, localização do site, SHA-256 da URL exata e
+até 12 frames de arquivo/linha/função. Mensagens brutas, HTML, source lines, locals,
+userinfo, parâmetros e fragmentos não são incluídos. Tokens Apify conhecidos são
+redigidos. Erros de gravação do diagnóstico mantêm a falha original visível. O
+arquivo é o último erro fatal e pode permanecer após uma retomada bem-sucedida.
+
+Normalização de URLs converte o path IRI em percent-encoding UTF-8 antes do cliente
+HTTP, preservando os escapes existentes e delimitadores de caminho. Isso cobre
+fontes, About/contato e redirects sem degradar identidade ou falhas inesperadas
+para uma decisão de classificação.
 
 Cada thread HTTP usa seu próprio opener. Uma Condition protege os slots ativos
 por hostname, normalizado e sem `www`; não é um limite por domínio registrável.

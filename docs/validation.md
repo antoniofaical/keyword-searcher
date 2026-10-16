@@ -1,4 +1,29 @@
-# Validação — versão 0.2.10
+# Validação — versão 0.2.11
+
+## URLs Unicode e diagnóstico de workers — 16/10/2026
+
+- O usuário forneceu o traceback do VPS: ao resolver a página
+  `https://www.salvus.me/melhor-sistema-para-gest%C3%A3o-assistencial-do-home-care`,
+  uma inspeção interna de About chegou a `http.client._encode_request` com `ç`
+  sem codificação. Resultado: `UnicodeEncodeError` ao produzir o request ASCII.
+  Não foi uma falha reportada pela Apify. O link interno exato e o HTML não foram
+  fornecidos; a reprodução usa um caminho sintético com o mesmo tipo de caractere.
+- A reprodução offline usa `HTTPConnection.putrequest` sem abrir socket. A
+  normalização antiga preservava Unicode cru; a nova codifica path em UTF-8 sem
+  duplicar `%C3%A7`, `%2F` ou outros escapes existentes. A navegação sintética
+  passa da URL da fonte para a raiz e um About com acentos/espaço.
+- O erro genérico escondia a causa. A correção distingue resolução, persistência
+  e progresso e registra contexto limitado em `worker_error.json`. Regressões
+  verificam preservação de decisões e outputs parciais, origem do erro, redação
+  de segredos, ausência de mensagens/HTML/locals e recheck sem alterar o original.
+- Esquema SQLite, regras de classificação, concorrência e recuperação Apify
+  permanecem iguais. O run `OJ7ojac4xpncS1Dim` é contexto fornecido pelo usuário;
+  nenhuma chamada a esse run ou ao site foi realizada no desenvolvimento.
+- 322 testes passaram localmente em Windows/Python 3.12.14, incluindo 14 novos
+  casos para paths Unicode/espaços, escapes preservados, navegação interna real
+  pelo cliente HTTP sem socket, diagnósticos por etapa, outputs parciais e
+  proteção do estado original no recheck. Ruff aprovado. Conferir os checks
+  remotos associados ao commit.
 
 ## Sobreposição da busca e verificação — 15/10/2026
 

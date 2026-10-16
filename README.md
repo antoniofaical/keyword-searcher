@@ -116,6 +116,18 @@ o Actor remoto. A retomada busca esse mesmo run, sem POST adicional.
 O número de workers é um teto: é preciso haver hosts independentes com links
 disponíveis. Cache, fase inicial da busca, CPU e fim do corpus também afetam a ocupação.
 
+Desde a 0.2.11, caminhos de URL com acentos, outros caracteres Unicode ou espaços
+são codificados antes do HTTP, incluindo links internos de About/contato e destinos
+de redirecionamento. Escapes existentes como `%C3%A7` e `%2F` são preservados.
+Uma falha inesperada de um worker paralelo interrompe a execução para revisão: a mensagem
+identifica tipo, etapa (`resolve`, `persist` ou `progress`) e site. O último erro
+fica em `worker_error.json` junto dos outputs, também no recheck em cópia. Esse
+diagnóstico contém query, localização do site, fingerprint da URL e frames de
+arquivo/linha/função; omite mensagens brutas, HTML, variáveis locais, userinfo,
+query string e fragmento. A presença do arquivo registra uma falha anterior, não
+indica que uma retomada posterior falhou. Retome usando o mesmo `run-dir`; decisões
+gravadas e IDs Apify são reaproveitados. Não é necessário abandonar o lote.
+
 Ctrl+C para o agendamento, cancela tarefas que ainda não começaram e salva
 resoluções concluídas. Operações de rede em andamento podem precisar terminar
 antes da exportação parcial; o timeout HTTP de 20 segundos por operação não é
