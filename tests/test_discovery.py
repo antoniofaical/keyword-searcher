@@ -123,7 +123,25 @@ def test_publisher_not_company():
         + "</script>"
     )
     result = WebsiteResolver(client).resolve(SearchResult("", "https://example.org"))
-    assert result.status != "confirmed"
+    assert (result.status, result.reason) == ("skipped", "editorial_or_listing_page")
+
+
+@pytest.mark.parametrize(
+    "response,expected_status,reason",
+    [
+        (web("", "https://linkedin.com/company/a"), "skipped", "non_institutional_source"),
+        (web("", status=403), "pending", "site_http_403"),
+        (web("", status=203), "pending", "site_http_203"),
+        (web("", status=202), "pending", "site_http_202"),
+    ],
+)
+def test_redirected_source_is_skipped_but_access_responses_stay_pending(
+    response, expected_status, reason
+):
+    client = Mock()
+    client.get.return_value = response
+    result = WebsiteResolver(client).resolve(SearchResult("", "https://example.org"))
+    assert (result.status, result.reason) == (expected_status, reason)
 
 
 @pytest.mark.parametrize(

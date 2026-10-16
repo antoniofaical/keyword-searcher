@@ -8,6 +8,23 @@ from .models import BudgetExceeded, DiscoveryError, Resolution
 
 
 class Store:
+    @classmethod
+    def open_existing(cls, path, *, readonly=True):
+        """Open schema-2 state for an audit without creating or migrating it."""
+        store = cls.__new__(cls)
+        mode = "ro" if readonly else "rw"
+        store.db = sqlite3.connect(Path(path).resolve().as_uri() + f"?mode={mode}", uri=True)
+        try:
+            schema = store.db.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            if not schema or schema[0] != "2":
+                raise DiscoveryError("Audit requires state schema 2; no migration was performed")
+        except BaseException:
+            store.db.close()
+            raise
+        return store
+
     def __init__(self, path: Path, config: dict):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
@@ -210,6 +227,21 @@ class Store:
                 "INSERT OR REPLACE INTO resolutions VALUES (?, ?, ?)",
                 (query, url, json.dumps(asdict(resolution), ensure_ascii=False)),
             )
+
+    def reclassify_non_institutional(self):
+        """Change only stored pending decisions with an existing excluded-source reason."""
+        from .resolve import NON_INSTITUTIONAL_REASONS
+
+        reasons = sorted(NON_INSTITUTIONAL_REASONS)
+        placeholders = ",".join("?" for _ in reasons)
+        with self.db:
+            cursor = self.db.execute(
+                "UPDATE resolutions SET payload=json_set(payload, '$.status', 'skipped') "
+                "WHERE json_extract(payload, '$.status')='pending' "
+                f"AND json_extract(payload, '$.reason') IN ({placeholders})",
+                reasons,
+            )
+        return cursor.rowcount
 
     def progress(self, query, status, reason=""):
         with self.db:

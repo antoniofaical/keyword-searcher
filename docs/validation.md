@@ -1,7 +1,37 @@
-# Validação — versão 0.2.1
+# Validação — versão 0.2.2
 
 A versão 0.2.0, de 07/10/2026, concluiu a migração Apify e introduziu saída externa.
-Os checks dessa entrega permanecem registrados abaixo da correção 0.2.1.
+Os checks dessa entrega e da correção 0.2.1 permanecem registrados abaixo.
+
+## Auditoria offline e estados editoriais — 08/10/2026
+
+- 117 testes passaram localmente. Os novos cenários verificam ausência de rede,
+  leitura sem token/queries, amostra reproduzível com agregação de queries e
+  preferência por hosts distintos, campos humanos vazios e conteúdo do ZIP.
+- A correção tem backup consistente, preserva campos das decisões, metadados e
+  progresso e é idempotente. Banco ausente não é criado, esquema futuro não é
+  migrado e pasta com revisão humana não é sobrescrita.
+- Fontes editoriais e redirecionamentos para fontes excluídas recebem `skipped`.
+  HTTP 403/202/203 continuam `pending`; nenhuma política de identidade foi ampliada.
+- Ruff lint/formatação aprovados. Os testes usam dados sintéticos; não comprovam
+  a qualidade da identificação de empresas no piloto real.
+
+## Piloto observado no VPS — 08/10/2026
+
+Evidência: saída do terminal fornecida pelo usuário, sem acesso ao banco ou ao CSV.
+Run Apify `GHzGpvpKXl8tXvV9n`, dataset `Su0OproYlVS2Sij0w`, 19 queries,
+95 páginas importadas, custo registrado US$ 0,42755 e duração total local de
+1.175 segundos. Todas as queries atingiram `limited/max_pages` (5 páginas).
+Isso comprova execução com resultados, não exaustão do Google.
+
+O relatório indicou 70 resoluções confirmadas, 67 linhas exportadas, 463 pendências
+e 320 resultados ignorados. O usuário contou 143 pendências de identidade ausente,
+133 HTTP 403 e 99 editoriais. Se o banco mantiver essas contagens, a correção dos
+99 casos editoriais produzirá 364 pendências e 419 ignorados, preservando as
+67 linhas do CSV. Essa previsão ainda precisa ser conferida no VPS.
+
+A revisão dos nomes/URLs confirmados e das amostras de pendências aguarda os
+arquivos do piloto. Não há medição de precisão, falsos positivos ou empresas omitidas.
 
 ## Correção de idioma e diagnóstico — 08/10/2026
 
@@ -62,23 +92,23 @@ substituídos por contratos Apify.
 
 ## Limites
 
-Nenhuma consulta autenticada/paga Apify foi executada. Não há piloto de mercado,
-medição de precisão/cobertura ou comparação de custo entre provedores.
+Nenhuma consulta autenticada/paga Apify foi executada neste ambiente de
+desenvolvimento. O piloto no VPS foi observado pelos logs fornecidos pelo usuário;
+não há medição de precisão/cobertura nem comparação de custo entre provedores.
 
 Os metadados de fila/custo usados para provar término dependem do Actor. Quando
 não permitem confirmar o encerramento, a ferramenta exporta os resultados úteis
 com cobertura incompleta, sem criar outra execução paga. Esse comportamento
-conservador precisa ser observado no piloto.
+conservador depende da evidência de cada execução.
 
 O estado remoto do CI deve ser conferido na execução vinculada ao commit/PR.
 Os resultados locais não são prova de aprovação remota.
 
 ## Próximo checkpoint operacional
 
-Configurar APIFY_API_TOKEN no ambiente, selecionar uma amostra de queries e
-definir orçamento. Usar diretórios externos de estado e saída, limites pequenos
-de páginas e teto por Actor. Conferir companies.csv, pendências, cobertura e
-evidência do run, contando falsos positivos e empresas omitidas.
+Gerar o pacote offline do piloto, conferir as contagens após a correção e revisar
+companies.csv e amostras de pendências. Identificar falsos positivos e possíveis
+omissões antes de alterar os critérios de identidade ou tratamento de HTTP 203.
 
 O teto por Actor não representa aprovação do orçamento total. Manter a amostra
 e a avaliação humana antes de qualquer mudança na política de identificação.
