@@ -159,3 +159,29 @@ omissões antes de alterar os critérios de identidade ou tratamento de HTTP 203
 
 O teto por Actor não representa aprovação do orçamento total. Manter a amostra
 e a avaliação humana antes de qualquer mudança na política de identificação.
+
+## Handoff — versão 0.2.5 (09/10/2026)
+
+233 testes passaram localmente em Windows/Python 3.14; Ruff lint/format e
+git diff --check passaram. Instalação editável com build isolado, versão instalada
+0.2.5 e pip check aprovados. A venv não contém setuptools como dependência de
+runtime; a instalação precisa do backend de build isolado definido no pyproject.
+
+O novo contrato usa somente funções de entrada do receptor em snapshot do
+commit dbd6c4cc4fb35bb820205b500b2bdf67eb84b34b. Os testes comparam a seleção do
+builder à seleção desse código, sem instalar/invocar crawler ou APIs do receptor.
+Cobrem nome/URL equivalentes, aliases, alternativas, subdomínios e caminhos,
+Unicode, colisões de nomes de pastas, zero confirmados, cobertura incompleta,
+Ctrl+C e retomada, recheck/audit, falha de escrita e preservação de banco/revisão.
+
+O CSV recebido da v3 foi usado num replay de compatibilidade separado: 50 linhas
+produzem as mesmas 22 entradas selecionadas pelo receptor. Esse replay usa
+somente o CSV: não reconstrói as 64 resoluções confirmadas ou todas as URLs
+descobertas originais, nem demonstra uma exportação do SQLite completo do VPS.
+O comando offline deve usar o banco real para produzir o manifesto completo.
+
+Nenhuma chamada Apify, Jev, DeepL, crawl ou mudança de decisão foi executada
+para a integração. As regras do piloto continuam na política 3; não há novo
+filtro de aderência ou alteração no CSV/SQLite. A matriz CI continua verificando
+bootstrap limpo e repetido em Linux/Python 3.11 e Windows/Python 3.13; conferir
+seu resultado no commit/PR desta versão.

@@ -239,7 +239,8 @@ O banco original permanece intacto. Revisita resultados confirmados, pendentes
 e descartados usando apenas GETs dos sites; não instancia transporte Apify,
 não inicia Actor nem solicita novos resultados do Google.
 
-Gera `companies.csv`, `pending.json`, `report.json`, `recheck_summary.json` e
+Gera `companies.csv`, `pending.json`, `report.json`, `handoff.json`,
+`handoff.metadata.json`, `recheck_summary.json` e
 `recheck_changes.json`. O último registra decisões anteriores e atuais por
 query/URL. Queries, páginas, progresso, configuração, IDs de runs e reservas são
 copiados sem alterações. Auditorias e campos de revisão humana existentes não
@@ -306,10 +307,81 @@ humana. `audit_summary.json` informa as contagens e correções. A mesma pasta
 recebe cópias atualizadas de `companies.csv`, `pending.json` e `report.json`;
 as exportações antigas permanecem como estavam.
 
-`audit_bundle.zip` reúne esses cinco arquivos CSV/JSON para revisão. O SQLite e
+`audit_bundle.zip` reúne esses cinco arquivos CSV/JSON e os dois arquivos de
+handoff para revisão. O SQLite e
 seu backup ficam fora do ZIP. Uma auditoria bem-sucedida retorna código 0 mesmo
 quando há pendências, pois esse código informa a geração do pacote, não a
 conclusão da descoberta.
+
+## Handoff para startup-adherence
+
+A partir da versão 0.2.5, cada exportação gera automaticamente `handoff.json`
+e `handoff.metadata.json` junto ao CSV e aos relatórios, fora do repositório.
+Isso vale para execução normal, retomada, Ctrl+C, recheck e auditoria.
+As regras de confirmação e o CSV de três colunas continuam os mesmos.
+
+`handoff.json` é uma lista UTF-8 sem BOM, diretamente compatível com
+`startup-adherence --sites-file`:
+
+```json
+[
+  {"name": "Synthetic Supplier", "url": "https://supplier.example.org/"}
+]
+```
+
+O exemplo é sintético. Só resoluções confirmadas entram na lista, usando o
+entrypoint institucional salvo. Pendentes e descartadas ficam no output atual.
+O handoff conserva a primeira ocorrência na ordenação por query/URL descoberta,
+deduplicando por nome exato ou URL equivalente conforme o receptor. HTTP/HTTPS,
+`www`, parâmetros e barras finais não distinguem URLs equivalentes; outros
+caminhos e subdomínios distinguem, mas o mesmo nome ainda conserva apenas a
+primeira URL. Não há escolha automática por aderência nem fusão por similaridade.
+
+`handoff.metadata.json` registra versão de contrato, produtor, receptor,
+contagens, estado das queries e, por candidato, todas as queries, URLs
+descobertas, decisões/evidências salvas e URLs/nomes alternativos. Os campos
+`coverage.search_complete`, `coverage.interrupted` e `coverage.partial`
+distinguem encerramento da busca, interrupção da exportação atual e pendências
+ou cobertura parcial. Limite de páginas não é conclusão exaustiva. O contador
+`duplicates` usa ocorrências confirmadas do banco, não linhas do CSV.
+
+O consumidor conserva uma única URL por nome e seu crawl não inclui outros
+subdomínios por padrão. As alternativas do manifesto precisam de revisão
+quando forem importantes para cobertura. Nomes diferentes que colidem no
+diretório de evidência do receptor, nomes inválidos ou URLs incompatíveis geram
+erro antes de substituir os outputs. O estado fica salvo para revisão e nova
+exportação; nomes não são renomeados silenciosamente. Zero confirmados produz
+`[]`; o consumidor deve verificar a contagem antes de iniciar (`No sites selected`).
+
+Para gerar o handoff de um estado já existente, sem visitar sites ou fazer
+buscas, use o exportador offline:
+
+```bash
+python -m keyword_searcher.export --run-dir ../keyword-searcher-data/rechecks/pilot_v3 --output-dir ../keyword-searcher-data/handoffs/pilot_v3
+```
+
+Ele abre `state.sqlite` somente para leitura, sem migrar o banco, e regenera os
+cinco outputs. Pode substituir esses arquivos regeneráveis na pasta de saída;
+arquivos de revisão humana, queries, páginas, IDs e decisões do banco não são
+alterados. Código 0 informa exportação concluída, mesmo se o manifesto indicar
+pendências/limites. Destino dentro do checkout é recusado.
+
+O perfil de aderência é selecionado separadamente. O comando seguinte é
+ilustrativo e exige um perfil aprovado já existente:
+
+```bash
+startup-adherence --mode crawl --sites-file ../keyword-searcher-data/handoffs/pilot_v3/handoff.json --profile /caminho/perfil-aprovado.json --evidence-root ../keyword-searcher-data/evidence/pilot_v3
+```
+
+Gerar o handoff não inicia crawl, Jev, DeepL nem outra busca Apify. A classificação
+é uma etapa posterior. Sem `--profile`, o receptor usa digital twins; esse
+padrão não deve ser adotado automaticamente para outro tema. O modo padrão do
+receptor é `smoke`, que inclui classificação paga após confirmação; especifique
+`--mode crawl` para apenas coletar evidência pública.
+
+Contrato verificado no receptor em
+[`dbd6c4c`, `select_sites`](https://github.com/antoniofaical/startup-theme-adherence-classifier-jev/blob/dbd6c4cc4fb35bb820205b500b2bdf67eb84b34b/src/startup_adherence/cli.py#L141-L199).
+Veja [o contrato de handoff](docs/handoff.md) para o manifesto e a validação offline.
 
 ## Desenvolvimento
 

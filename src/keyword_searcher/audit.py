@@ -166,6 +166,8 @@ def generate_audit(run_dir, directory, *, size=20, seed=42, reclassify=False):
                 "companies.csv",
                 "pending.json",
                 "report.json",
+                "handoff.json",
+                "handoff.metadata.json",
             ):
                 bundle.write(directory / name, arcname=name)
         return summary

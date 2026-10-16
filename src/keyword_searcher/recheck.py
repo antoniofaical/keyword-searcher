@@ -60,7 +60,7 @@ def recheck_saved(run_dir, directory, *, http=None, progress=True):
         except KeyboardInterrupt:
             interrupted = True
         finally:
-            report = export_results(store, directory)
+            report = export_results(store, directory, interrupted=interrupted)
         after = {(q, url): asdict(item) for q, url, item in store.export_resolutions()}
         fields = ("status", "name", "url", "reason")
         changes = [

@@ -147,7 +147,7 @@ def main(argv=None):
         except KeyboardInterrupt:
             interrupted = True
         finally:
-            report = export_results(store, args.output_dir)
+            report = export_results(store, args.output_dir, interrupted=interrupted)
         print(
             json.dumps(
                 {key: value for key, value in report.items() if key != "queries"},
@@ -157,6 +157,7 @@ def main(argv=None):
         )
         print(f"State: {args.run_dir / 'state.sqlite'}")
         print(f"Detailed coverage: {args.output_dir / 'report.json'}")
+        print(f"Classifier handoff: {args.output_dir / 'handoff.json'}")
         if interrupted:
             return 130
         incomplete = any(q["status"] != "complete" for q in report["queries"])

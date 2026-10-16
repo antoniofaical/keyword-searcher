@@ -73,6 +73,8 @@ def test_readonly_audit_does_not_change_state_or_make_network_requests(tmp_path,
             "companies.csv",
             "pending.json",
             "report.json",
+            "handoff.json",
+            "handoff.metadata.json",
         }
 
 
