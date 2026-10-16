@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.8
+# Arquitetura e contratos — 0.2.9
 
 ## Responsabilidade
 
@@ -36,13 +36,28 @@ CLI e recheck usam `--workers 8` por padrão; `--workers 1` não cria executor.
 As funções de baixo nível `run`/`recheck_sites` conservam o padrão sequencial para
 compatibilidade; os pontos de entrada passam a quantidade explicitamente.
 Threads executam somente `resolver.resolve`. Apify, leitura/gravação SQLite e
-exportação ficam no coordenador. Consultas e páginas continuam sendo percorridas
-em ordem; os resultados de cada página terminam em qualquer ordem e são gravados
-sem esperar os demais. Exportações conservam a ordenação query/URL do SQLite.
+exportação ficam no coordenador. A fonte percorre consultas e páginas em ordem,
+mas desde a 0.2.9 uma fila única mantém resoluções de páginas/consultas diferentes
+em andamento. Cada resultado concluído é persistido sem esperar os demais.
+Exportações conservam a ordenação query/URL do SQLite.
 
-Há no máximo N futures pendentes; hosts de origem são intercalados antes do envio.
-Um site lento ainda pode atrasar a conclusão de sua página. Esse limite evita
-enfileirar o corpus inteiro ou aumentar memória proporcionalmente ao corpus.
+Há no máximo N futures no executor e 4 × N jobs aguardando localmente, com espera
+por conclusões quando a fila enche. Hosts de origem são intercalados; uma resolução
+por host de origem ocupa o pool, enquanto outras desse host aguardam na fila.
+Isso evita preencher o executor com esperas de um mesmo host e limita memória
+sem carregar o corpus inteiro. A janela finita pode restringir o aproveitamento
+quando contém muitos links de poucos hosts. Worker count é teto, não promessa de
+ocupação constante; cache, CPU, latência e fim do corpus também afetam atividade.
+
+O coordenador contabiliza jobs por query. Após ler sua última página, registra
+o resultado esperado; só encerra a query no SQLite/progresso quando o contador
+chega a zero. Interrupções identificam queries ainda sem decisões; queries já
+concluídas mantêm seus estados. Uma falha inesperada do worker é atribuída à
+query original, mesmo se a fonte já avançou para outra, e interrompe o fluxo com
+`site_worker_failed`. O recheck usa os mesmos callbacks sem alterar progresso de
+busca da cópia. Antes de buscar um payload ainda não salvo, o pool é drenado para
+persistir sites disponíveis antes de uma espera remota longa. A concorrência e
+as reservas dos Actors permanecem controladas pelo fluxo principal.
 
 Cada thread HTTP usa seu próprio opener. Uma Condition protege os slots ativos
 por hostname, normalizado e sem `www`; não é um limite por domínio registrável.
@@ -65,8 +80,10 @@ Não há encerramento forçado de threads: DNS e operações bloqueantes podem a
 a parada. O timeout de 20 s é por operação HTTP, não um deadline de resolução.
 
 O progresso usa seu próprio RLock; callbacks dos workers apenas atualizam o
-terminal. Mostra contagem ativa, decisões contabilizadas e o tempo da resolução
-mais antiga, separado do tempo total. Quantidade de workers não entra na identidade
+terminal. Mostra contagem ativa, fila aguardando, decisões contabilizadas e o tempo
+da resolução mais antiga, separado do tempo total. Em paralelo, os contadores de
+páginas e resultados são globais; queries concluídas podem terminar fora da ordem
+de entrada. Quantidade de workers não entra na identidade
 do banco. A reavaliação continua usando cópia/backup e preserva o estado original.
 
 ## Persistência e migração

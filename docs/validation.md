@@ -1,4 +1,26 @@
-# Validação — versão 0.2.8
+# Validação — versão 0.2.9
+
+## Alimentação contínua dos workers — 15/10/2026
+
+- O teste no VPS mostrou até poucos workers ativos com `--workers 100`. A 0.2.8
+  tinha uma barreira ao final de cada página, limitando concorrência ao número de
+  links da página. A 0.2.9 mantém uma fila limitada entre páginas e consultas.
+- 293 testes locais passaram em Windows/Python 3.12.14. Dez novos casos incluem
+  sincronização de 20 e 100 resoluções reais em threads, distribuídas entre
+  múltiplas páginas/queries, tanto na busca quanto no recheck. Cada teste usa hosts
+  sintéticos distintos e exige que todos os workers entrem antes de liberar o grupo.
+- Também são verificados conclusão fora de ordem, SQLite no coordenador, query
+  mantida `running` até seus sites terminarem, espera por host fora do executor,
+  interrupção/retomada com várias queries em andamento, atribuição de erro à query
+  original, persistência antes de novo Actor e progresso global sem resets.
+- Simulação offline comparou o commit 0.2.8 `3fc6647` com a fila contínua: 100
+  workers configurados, dez queries, dez páginas/query, um site independente/página
+  e latência de 100 ms. A versão anterior mediu 10,860 s e pico de 1 ativo; a nova
+  mediu 0,640 s e pico de 100, com as mesmas 100 decisões. O ganho de 16,97× é
+  específico desse cenário sintético; não é previsão para o VPS.
+- Ruff lint/formatação aprovados. Nenhuma busca Apify ou visita real foi feita.
+  As regressões de cache, cobertura parcial e handoff continuam passando.
+- O estado remoto dos checks deve ser conferido no PR associado ao commit.
 
 ## Registros de erro no dataset Apify — 15/10/2026
 
