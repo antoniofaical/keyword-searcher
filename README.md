@@ -92,7 +92,13 @@ no resolvedor local.
 `--max-apify-pages` limita a reserva cumulativa de páginas no diretório. Cada
 lote reserva antecipadamente queries × `--max-pages`; o tamanho do lote se ajusta
 ao orçamento restante de páginas. A reserva pode ser maior
-que o número de páginas efetivamente recebido. O padrão é 900 páginas.
+que o número de páginas efetivamente recebido. O argumento é opcional: quando
+omitido, o limite é o número de queries únicas no arquivo × `--max-pages`, após
+remover linhas vazias e repetidas. Por exemplo, 26 queries com `--max-pages 10`
+permitem reservar até 260 páginas. Um valor explícito, como
+`--max-apify-pages 100`, mantém esse limite mesmo quando não cobre todas as queries.
+Na retomada, as reservas anteriores continuam contando dentro do limite calculado;
+lotes abandonados também contam e podem exigir um limite explícito maior.
 `--apify-run-cost-limit-usd` envia um teto de cobrança por Actor à Apify,
 com padrão de US$ 1. **Esse teto não limita o gasto total de vários lotes.**
 Os limites dos exemplos não aprovam um orçamento.
