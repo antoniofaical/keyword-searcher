@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from html import unescape
 from urllib.parse import urljoin
 
 from .models import DiscoveryError
@@ -10,15 +11,72 @@ from .urls import normalize_url, same_host
 
 
 def name_key(name):
-    name = unicodedata.normalize("NFKD", name).casefold()
+    name = unicodedata.normalize("NFKD", unescape(name)).casefold().strip(" ,.-")
     name = re.sub(r"\.(com|org|net)$", "", name)
     name = re.sub(
-        r"(?:\s|,)+(?:pte\.?\s+)?(?:ltd\.?|limited|inc\.?|incorporated|"
-        r"llc|corp\.?|corporation|s\.?\s*l\.?|s\.?\s*a\.?)$",
+        r"(?:\s|,)+(?:pte\.?\s+|pty\.?\s+)?(?:ltd\.?|limited|inc\.?|incorporated|"
+        r"llc|corp\.?|corporation|ag|gmbh|aps|as|ab|plc|srl|s\.?\s*l\.?|s\.?\s*a\.?)$",
         "",
         name,
     )
     return "".join(c for c in name if c.isalnum() and not unicodedata.combining(c))
+
+
+def signal_keys(signal, anchors):
+    keys = {name_key(signal["name"]), *(name_key(a) for a in signal["aliases"])}
+    # A caption is removable only in presentation contexts and when its complete
+    # prefix independently matches another declared name. Never shorten Organization.
+    if signal["context"] in {"website", "site_name", "copyright"}:
+        prefix = re.split(r"\s+[|–—-]\s+|\s*\|\s*", signal["name"], maxsplit=1)[0]
+        if signal["context"] == "copyright":
+            prefix = prefix.split(",", 1)[0]
+        key = name_key(prefix)
+        if key in anchors:
+            keys.add(key)
+    return keys - {""}
+
+
+def copyright_names(soup):
+    """Only ownership notices, not policy links, font licenses or image credits."""
+    for element in soup.find_all(string=True):
+        parents = list(element.parents)
+        if any(
+            p.name in {"script", "style", "noscript", "template", "svg", "title", "a"}
+            for p in parents
+        ):
+            continue
+        scoped = any(
+            p.name == "footer"
+            or p.get("role") == "contentinfo"
+            or re.search(
+                r"footer|copyright|copy-right",
+                " ".join([p.get("id", ""), *p.get("class", [])]),
+                re.I,
+            )
+            for p in parents
+        )
+        if not scoped:
+            continue
+        text = str(element).strip()
+        if len(text) > 250:
+            continue
+        match = re.match(
+            r"^(?:(?:©|ⓒ)\s*(?:copyright\s*)?|copyright\s*[:\-]?\s*(?:©|ⓒ)?\s*)"
+            r"(?:\d{4}(?:\s*[-–]\s*\d{4})?\s*)?(?:by\s+)?([^\W_].*)$",
+            text,
+            re.I,
+        )
+        if not match:
+            continue
+        name = re.split(r"\ball\s+rights\b|\btodos os direitos\b|[|©]", match[1], flags=re.I)[
+            0
+        ].strip(" .-")
+        if not any(char.isalpha() for char in name):
+            continue
+        if re.match(r"(?:notice|policy|permission|holder|is|statuses|terms)\b", name, re.I):
+            continue
+        if 2 <= len(name) <= 90 and not re.search(r"website by|designed by|powered by", name, re.I):
+            yield name
 
 
 def identity(soup, base, nodes, types, organization_types):
@@ -57,8 +115,10 @@ def identity(soup, base, nodes, types, organization_types):
             signals.append({"context": "site_name", "name": tag["content"].strip(), "aliases": []})
 
     strong = list(signals)
+    anchors = {name_key(s["name"]) for s in strong}
+    anchors.update(name_key(a) for s in strong for a in s["aliases"])
     if strong:
-        keys = [{name_key(s["name"]), *(name_key(a) for a in s["aliases"])} for s in strong]
+        keys = [signal_keys(s, anchors) for s in strong]
         if not set.intersection(*keys):
             return None, signals, True
 
@@ -75,21 +135,8 @@ def identity(soup, base, nodes, types, organization_types):
             name = re.sub(r"\blogo\b", "", image["alt"], flags=re.I).strip(" -|")
             if 2 <= len(name) <= 90:
                 signals.append({"context": "logo", "name": name, "aliases": []})
-    for element in soup.find_all(string=True):
-        if any(p.name in {"script", "style", "noscript", "template"} for p in element.parents):
-            continue
-        text = str(element).strip()
-        if len(text) > 250 or not re.search(r"©|copyright", text, re.I):
-            continue
-        match = re.search(r"(?:©|copyright\s*(?:©)?)\s*[\d\s–—-]*\s*(?:by\s+)?(.+)", text, re.I)
-        if match:
-            name = re.split(r"\ball\s+rights\b|\btodos os direitos\b|[|©]", match[1], flags=re.I)[
-                0
-            ].strip(" .-")
-            if 2 <= len(name) <= 90 and not re.search(
-                r"website by|designed by|powered by", name, re.I
-            ):
-                signals.append({"context": "copyright", "name": name, "aliases": []})
+    for name in copyright_names(soup):
+        signals.append({"context": "copyright", "name": name, "aliases": []})
     # Explicit self-description, unlike duplicate head metadata, is independent.
     text = visible_text(soup)
     for signal in list(signals):
@@ -102,9 +149,15 @@ def identity(soup, base, nodes, types, organization_types):
             signals.append({"context": "self_description", "name": brand, "aliases": []})
     if strong:
         allowed = set.union(*keys)
-        if any(s["context"] == "copyright" and name_key(s["name"]) not in allowed for s in signals):
+        if any(
+            s["context"] == "copyright" and not signal_keys(s, allowed) & allowed for s in signals
+        ):
             return None, signals, True
-        preferred = next((s for s in strong if s["context"] == "organization"), strong[0])
+        shared = set.intersection(*keys)
+        preferred = next(
+            (s for s in strong if s["context"] == "organization"),
+            next((s for s in strong if name_key(s["name"]) in shared), strong[0]),
+        )
         return preferred["name"], signals, False
     grouped = {}
     for signal in signals:
@@ -121,7 +174,8 @@ def identity(soup, base, nodes, types, organization_types):
     match = matches[0]
     # Conflicting copyright identifies the owner; do not accept a customer's logo.
     if any(
-        s["context"] == "copyright" and name_key(s["name"]) != name_key(match[0]["name"])
+        s["context"] == "copyright"
+        and name_key(match[0]["name"]) not in signal_keys(s, {name_key(match[0]["name"])})
         for s in signals
     ):
         return None, signals, True

@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.3
+# Arquitetura e contratos — 0.2.4
 
 ## Responsabilidade
 
@@ -109,6 +109,12 @@ funcionais não permitem confirmação. A evidência guarda a falha original.
 
 Identidade estruturada conflita quando os nomes não concordam nem têm alias
 explícito. Sem metadata, dois contextos concordantes apoiam a identidade.
+Na política 3, sufixos jurídicos comuns são comparados sem alterar nomes salvos.
+Slogans delimitados de metadata de apresentação exigem um prefixo independente
+concordante; nomes de `Organization` não são encurtados. Copyright deve ser um
+aviso de proprietário em rodapé; créditos de artigos/SVGs e links não o substituem.
+Portais de pesquisa explícitos e fontes editoriais prevalecem sobre menus de oferta;
+frases sobre serviço em banners de cookies não constituem oferta própria.
 Título e domínio de busca não identificam uma empresa. Não há filtro temático.
 São visitadas no máximo cinco URLs por resultado, com cache de 128 entradas e
 8 MiB de conteúdo HTML (o HTML analisado ocupa memória adicional).

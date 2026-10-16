@@ -188,6 +188,11 @@ O nome não é adivinhado a partir do domínio ou do título de busca.
 4. Compara `Organization`, `WebSite`, `og:site_name` e copyright. Conflitos entre
    marca e agência geram pendência. Sufixos jurídicos usuais e `alternateName`
    explícito permitem comparar nomes sem consolidar marcas por domínio.
+   Na 0.2.4, isso inclui AG, ApS, GmbH e outras formas usuais. Slogans delimitados
+   em `WebSite`/`og:site_name` ou copyright só são removidos para comparação se o
+   prefixo completo concordar com outro nome declarado; `Organization` não é truncado.
+   Copyright é lido em avisos de propriedade no rodapé, excluindo SVGs, créditos
+   em artigos, links de política e licenças de fontes.
 5. Na ausência de metadata, exige concordância entre contextos diferentes:
    título, logo, copyright ou autodescrição visível. Pode consultar uma página
    institucional About/contato do mesmo host para apoiar a identidade da home.
@@ -195,6 +200,8 @@ O nome não é adivinhado a partir do domínio ou do título de busca.
    planos de assinatura ou solicitação de demonstração. Pesquisa acadêmica,
    publicação ou identidade isolada não bastam. Um instituto com serviços
    próprios pode ser confirmado; isso não afirma que seja startup ou empresa privada.
+   Frases como “our service” em cookies/rodapés não contam como oferta. Identidade
+   explícita de portal de pesquisa ou fonte editorial prevalece sobre menus genéricos.
 7. Exporta o endereço institucional final. Erros funcionais na URL, páginas de
    login, bloqueio e desafios ficam pendentes, mesmo com metadata de marca.
 

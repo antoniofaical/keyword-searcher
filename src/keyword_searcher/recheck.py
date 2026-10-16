@@ -13,7 +13,7 @@ from .http import HttpClient
 from .models import DiscoveryError
 from .pipeline import recheck_sites
 from .progress import TerminalProgress
-from .resolve import WebsiteResolver
+from .resolve import POLICY_VERSION, WebsiteResolver
 from .store import Store
 
 
@@ -70,7 +70,7 @@ def recheck_saved(run_dir, directory, *, http=None, progress=True):
         ]
         summary = dict(
             mode="saved_sites_recheck",
-            policy_version=2,
+            policy_version=POLICY_VERSION,
             interrupted=interrupted,
             before=dict(Counter(x["status"] for x in before.values())),
             after=dict(Counter(x["status"] for x in after.values())),

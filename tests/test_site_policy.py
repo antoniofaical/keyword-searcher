@@ -345,3 +345,150 @@ def test_cache_also_bounds_content_size_and_does_not_retain_tracebacks():
     with pytest.raises(DiscoveryError):
         site.page(ROOT + "missing")
     assert isinstance(site.cache[ROOT + "missing"], str)
+
+
+@pytest.mark.parametrize("suffix", ["AG", "ApS", "GmbH", "AS", "AB", "Pty Ltd", "PLC", "SRL"])
+def test_legal_suffix_in_owner_notice_is_compatible_with_declared_brand(suffix):
+    site, _ = resolver(
+        {ROOT: schema() + OFFER + f"<footer>© 2026 Synthetic Supplier {suffix}</footer>"}
+    )
+    result = site.resolve(SearchResult("", ROOT))
+    assert (result.status, result.name) == ("confirmed", "Synthetic Supplier")
+
+
+@pytest.mark.parametrize("context", ["WebSite", "site_name", "copyright"])
+def test_delimited_slogan_only_matches_independently_declared_brand(context):
+    caption = "Synthetic Supplier - Advanced Cell Interfaces"
+    extra = (
+        schema("WebSite", caption)
+        if context == "WebSite"
+        else f'<meta property="og:site_name" content="{caption}">'
+        if context == "site_name"
+        else f"<footer>© 2026 {caption}</footer>"
+    )
+    site, _ = resolver({ROOT: schema() + extra + OFFER})
+    assert site.resolve(SearchResult("", ROOT)).status == "confirmed"
+
+
+def test_copyright_location_after_legal_name_matches_brand():
+    site, _ = resolver(
+        {ROOT: schema() + OFFER + "<footer>© 2026 Synthetic Supplier AG, Switzerland</footer>"}
+    )
+    assert site.resolve(SearchResult("", ROOT)).status == "confirmed"
+
+
+def test_organization_name_is_not_shortened_at_a_dash():
+    site, _ = resolver(
+        {ROOT: schema(name="Synthetic Supplier - Different Owner") + schema("WebSite") + OFFER}
+    )
+    assert site.resolve(SearchResult("", ROOT)).reason == "conflicting_company_identity"
+
+
+def test_matching_prefix_without_delimiter_does_not_establish_same_identity():
+    site, _ = resolver({ROOT: schema() + schema("WebSite", "Synthetic Supplier Holdings") + OFFER})
+    assert site.resolve(SearchResult("", ROOT)).reason == "conflicting_company_identity"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '<footer><a href="/copyright">Copyright Notice, and Terms of Use</a></footer>',
+        "<svg><metadata>© 2026 Synthetic Icon Vendor</metadata></svg>",
+        "<main><article>© 2026 Independent Scientist</article></main>",
+        '<footer><span>Copyright</span><a href="/legal">holder permissions</a></footer>',
+        "<p>copyright is retained by the authors</p>",
+    ],
+)
+def test_non_owner_copyright_text_does_not_create_a_brand_conflict(extra):
+    site, _ = resolver({ROOT: schema() + OFFER + extra})
+    assert site.resolve(SearchResult("", ROOT)).status == "confirmed"
+
+
+def test_actual_footer_owner_conflict_still_blocks_confirmation():
+    site, _ = resolver(
+        {ROOT: schema() + OFFER + "<footer>© 2026 Synthetic Other Owner AG</footer>"}
+    )
+    assert site.resolve(SearchResult("", ROOT)).reason == "conflicting_company_identity"
+
+
+def test_footer_owner_without_year_still_detects_conflict():
+    site, _ = resolver(
+        {ROOT: schema() + OFFER + "<footer>Copyright Synthetic Other Owner GmbH</footer>"}
+    )
+    assert site.resolve(SearchResult("", ROOT)).reason == "conflicting_company_identity"
+
+
+def test_copyright_marker_before_copyright_word_does_not_duplicate_owner_name():
+    site, _ = resolver(
+        {ROOT: schema() + OFFER + "<footer>© Copyright 2026 Synthetic Supplier AG</footer>"}
+    )
+    assert site.resolve(SearchResult("", ROOT)).status == "confirmed"
+
+
+def test_numeric_brand_in_owner_notice_is_not_mistaken_for_a_date():
+    site, _ = resolver({ROOT: schema() + OFFER + "<footer>© 2026 3Synthetic AG</footer>"})
+    assert site.resolve(SearchResult("", ROOT)).reason == "conflicting_company_identity"
+
+
+def test_html_entities_in_declared_names_are_compared_as_text():
+    site, _ = resolver(
+        {
+            ROOT: schema(name="Synthetic Cells &amp; Devices")
+            + schema("WebSite", "Synthetic Cells & Devices")
+            + OFFER
+        }
+    )
+    assert site.resolve(SearchResult("", ROOT)).status == "confirmed"
+
+
+@pytest.mark.parametrize("wrapper", ["footer", "aside", "blockquote", 'div id="onetrust-policy"'])
+def test_cookie_or_legal_reference_to_our_service_is_not_an_offer(wrapper):
+    tag = wrapper.split()[0]
+    site, _ = resolver(
+        {ROOT: schema() + f"<{wrapper}>We use cookies to improve our service.</{tag}>"}
+    )
+    assert site.resolve(SearchResult("", ROOT)).reason == "provider_offer_unverified"
+
+
+@pytest.mark.parametrize(
+    "name", ["Research portal Synthetic University", "Research Communities by Synthetic Publisher"]
+)
+def test_explicit_research_portal_is_not_confirmed_by_products_menu(name):
+    site, _ = resolver(
+        {ROOT: schema(name=name) + f'<meta property="og:site_name" content="{name}">' + OFFER}
+    )
+    assert site.resolve(SearchResult("", ROOT)).status == "skipped"
+
+
+def test_research_core_offer_is_not_confused_with_reference_to_a_portal():
+    site, _ = resolver(
+        {
+            ROOT: schema(name="Synthetic Research Institute")
+            + "<title>Tools for using research portals</title>"
+            + OFFER
+        }
+    )
+    assert site.resolve(SearchResult("", ROOT)).status == "confirmed"
+
+
+def test_publisher_home_identified_after_inaccessible_deep_page_is_skipped():
+    url = ROOT + "publication.pdf"
+    site, _ = resolver(
+        {url: (403, ""), ROOT: "<title>Research portal Synthetic University</title>" + OFFER}
+    )
+    assert site.resolve(SearchResult("", url)).status == "skipped"
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "independent.co.uk",
+        "artecult.com",
+        "communities.springernature.com",
+        "developers.google.com",
+    ],
+)
+def test_newly_audited_intermediaries_are_not_fetched(host):
+    site, client = resolver({})
+    assert site.resolve(SearchResult("", f"https://{host}/")).status == "skipped"
+    client.get.assert_not_called()

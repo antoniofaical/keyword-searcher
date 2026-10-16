@@ -36,6 +36,15 @@ validação jurídica, ranking de startups ou tratamento geral de HTTP 203 como 
 
 ## Critérios e limites
 
+A reavaliação da 0.2.3 mostrou que slogans e formas jurídicas eram tratados como
+nomes distintos e que avisos de cookies podiam fornecer uma oferta fictícia.
+A 0.2.4 usa política 3: amplia sufixos usuais, compara prefixos completos apenas
+em metadata de apresentação com outro nome independente concordante, e limita
+copyright a avisos de propriedade em rodapé. Não remove partes de `Organization`
+nem resolve marcas diferentes por similaridade. Fontes explícitas de pesquisa ou
+publicação têm prioridade sobre menus; cookies/rodapés não fornecem autodescrição
+de oferta. Conflitos reais continuam pendentes e o formato dos dados é preservado.
+
 Fontes conhecidas são classificadas por host exato ou subdomínio, não por
 sufixos `.org`/`.edu`. Fontes desconhecidas usam evidência da página. Oferta
 própria é heurística: menus e chamadas explícitas de produtos/serviços podem

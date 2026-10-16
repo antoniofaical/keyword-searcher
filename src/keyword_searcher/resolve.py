@@ -7,7 +7,14 @@ from bs4 import BeautifulSoup
 
 from .identity import identity, name_key
 from .models import DiscoveryError, Resolution
-from .site_policy import INSTITUTION, interstitial, known_source, own_offer, visible_text
+from .site_policy import (
+    INSTITUTION,
+    declared_source_kind,
+    interstitial,
+    known_source,
+    own_offer,
+    visible_text,
+)
 from .urls import normalize_url, same_host
 
 # These are source types, never filters on company age, market, activity or adherence.
@@ -48,6 +55,7 @@ ORG_TYPES = {
 }
 EDITORIAL_TYPES = {"NewsArticle", "Article", "BlogPosting", "Review", "ItemList"}
 NON_INSTITUTIONAL_REASONS = {"non_institutional_source", "editorial_or_listing_page"}
+POLICY_VERSION = 3
 
 
 def nodes(soup):
@@ -167,11 +175,17 @@ class WebsiteResolver:
         problem = interstitial(final, soup)
         if problem:
             raise DiscoveryError(problem)
+        if declared_source_kind(soup):
+            raise DiscoveryError("non_institutional_source")
         return final, soup, len(response.body.encode("utf-8"))
 
     def resolve(self, result):
         inspected = []
-        details = {"policy_version": 2, "source_url": result.url, "inspected": inspected}
+        details = {
+            "policy_version": POLICY_VERSION,
+            "source_url": result.url,
+            "inspected": inspected,
+        }
 
         def decision(status, reason, name="", url=""):
             return Resolution(status, name, url, reason, json.dumps(details, ensure_ascii=False))
@@ -255,6 +269,8 @@ class WebsiteResolver:
                 except DiscoveryError as exc:
                     failures[url] = str(exc)
                     details["access_failures"] = failures
+                    if str(exc) in NON_INSTITUTIONAL_REASONS:
+                        return decision("skipped", str(exc))
                     continue
                 # A redirect must still lead to the same institutional host.
                 if not same_host(final, base):

@@ -1,4 +1,28 @@
-# Validação — versão 0.2.3
+# Validação — versão 0.2.4
+
+## Correções a partir da reavaliação real — 08/10/2026
+
+- O pacote da reavaliação confirmou 853 decisões: 60 confirmadas, 426 pendentes,
+  367 descartadas e 46 linhas exportadas. Das 391 alterações, 336 mudaram estado
+  e 55 alteraram outros campos de decisão. Só sete confirmações antigas permaneceram
+  confirmadas; 53 decisões antes pendentes/descartadas passaram a confirmadas.
+- Os 115 conflitos incluíam diferenças de sufixos jurídicos, slogans e textos
+  que não identificavam o proprietário. Seis fornecedores antes confirmados
+  ficaram pendentes por esses padrões: 3Brain, Cambridge NeuroTech, CelVivo,
+  MaxWell, Fluigent e Sartorius. São 16 resoluções antigas, não 16 empresas.
+- Portais de pesquisa e publicação passaram indevidamente por sinais genéricos
+  de produtos ou por “our service” em aviso de cookies. A política 3 prioriza
+  esse tipo de fonte e restringe o contexto das evidências de oferta/copyright.
+- 210 testes locais passaram, incluindo os novos padrões e negativas contra
+  fusão por substring, truncamento de `Organization` e conflito real de proprietário.
+  Os 13 HTMLs capturados anteriormente continuam passando no replay offline.
+- A reconstrução sintética dos nomes recebidos de oito hosts tornou compatíveis
+  os seis fornecedores acima e preservou conflitos de Organoid Grid e OrganoidTest.
+  Isso não verifica HTTP, oferta ou o DOM original dessas oito páginas.
+
+O efeito completo da 0.2.4 exige nova reavaliação do banco copiado no VPS.
+Nenhum total agregado dessa versão foi produzido a partir do SQLite do usuário.
+O estado remoto dos checks deve ser conferido no PR associado ao commit.
 
 ## Regras de fonte e identidade — 08/10/2026
 
