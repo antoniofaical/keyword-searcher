@@ -1,6 +1,31 @@
-# Validação — versão 0.2.0
+# Validação — versão 0.2.1
 
-Data: 07/10/2026. Esta versão conclui a migração Apify e introduz saída externa.
+A versão 0.2.0, de 07/10/2026, concluiu a migração Apify e introduziu saída externa.
+Os checks dessa entrega permanecem registrados abaixo da correção 0.2.1.
+
+## Correção de idioma e diagnóstico — 08/10/2026
+
+- O schema público do Actor `apify/google-search-scraper`, build `0.0.462`
+  (`j1KHroHbaMQXFmDBG`), aceita `pt-BR`/`pt-PT` e rejeita `pt` em
+  `languageCode`. A lista observada está em `tests/fixtures/apify_language_contract.json`.
+- No VPS, uma chamada autenticada a `/validate-input` com `languageCode=pt`
+  retornou HTTP 400, `invalid-input`. O endpoint de autenticação retornou 200,
+  e o usuário não encontrou run correspondente no console. Isso confirma a
+  incompatibilidade de entrada; não constitui uma busca bem-sucedida.
+- A conversão ocorre somente no transporte: `pt` vira `pt-BR`, ou `pt-PT` quando
+  o país é `pt`. Configuração, IDs e dados do banco mantêm seus valores anteriores.
+- Erros HTTP agora preservam código, tipo e mensagem da API, com tamanho limitado,
+  remoção de controles do terminal e ocultação de tokens. A mensagem de criação
+  incerta inclui essa causa e continua impedindo retry automático de POST.
+- 107 testes passaram localmente, incluindo a recuperação sintética de um lote
+  rejeitado de 19 queries, sem alterar o idioma armazenado, seguida de retomada
+  sem outro POST. As reservas cumulativas permanecem: 95 + 95 = 190 páginas.
+- Ruff lint/formatação aprovados. Não houve execução autenticada/paga de Actor
+  neste ambiente; a validação HTTP 400 foi fornecida pelo usuário.
+
+Fontes do contrato: [build público](https://api.apify.com/v2/actor-builds/j1KHroHbaMQXFmDBG),
+[entrada do Actor](https://apify.com/apify/google-search-scraper/input-schema) e
+[validação de entrada](https://docs.apify.com/api/v2/actor-validate-input-post).
 
 ## Executado localmente
 

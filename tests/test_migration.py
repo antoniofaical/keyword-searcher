@@ -205,6 +205,82 @@ def test_cli_apify_resume_recheck_and_change_output_without_token(tmp_path, monk
     assert not (tmp_path / "state/companies.csv").exists()
 
 
+def test_cli_recovers_rejected_19_query_batch_without_changing_language(tmp_path, monkeypatch):
+    queries = [f"query {index}" for index in range(19)]
+    query_file = tmp_path / "queries.txt"
+    query_file.write_text("\n".join(queries), encoding="utf-8")
+    run_dir = tmp_path / "state"
+    old_config = config()
+    old_config.update(queries=queries, max_pages=5)
+    store = Store(run_dir / "state.sqlite", old_config)
+    rejected = store.apify_plan_batch(queries, 95, 100)
+    store.close()
+    requests = []
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def read(self, _limit):
+            return json.dumps({"data": {"id": "run123"}}).encode()
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        return Reply()
+
+    evidence = dict(
+        dataset_id="dataset123",
+        run_id="run123",
+        status="SUCCEEDED",
+        exit_code=0,
+        cost_usd=0.1,
+        cost_limit_usd=2,
+        pending_requests=0,
+        handled_requests=19,
+    )
+    records = [
+        {"searchQuery": {"term": query, "page": 1}, "organicResults": []} for query in queries
+    ]
+    monkeypatch.setenv("APIFY_API_TOKEN", "synthetic-token")
+    monkeypatch.setattr("keyword_searcher.apify.urlopen", urlopen)
+    monkeypatch.setattr("keyword_searcher.apify.ApifyTransport.completed", lambda self, _: evidence)
+    monkeypatch.setattr(
+        "keyword_searcher.apify.ApifyTransport.items", lambda self, _: iter(records)
+    )
+    args = [
+        "--queries",
+        str(query_file),
+        "--run-dir",
+        str(run_dir),
+        "--output-dir",
+        str(tmp_path / "output"),
+        "--max-pages",
+        "5",
+        "--max-apify-pages",
+        "190",
+        "--apify-run-cost-limit-usd",
+        "2",
+        "--no-progress",
+    ]
+    assert main(args + ["--apify-abandon-batch"]) == 0
+    assert main(args) == 0
+    assert len(requests) == 1
+    assert json.loads(requests[0].data)["languageCode"] == "pt-BR"
+    assert "maxTotalChargeUsd=2.0" in requests[0].full_url
+    report = json.loads((tmp_path / "output/report.json").read_text(encoding="utf-8"))
+    assert report["query_status_counts"] == {"complete": 19}
+    assert report["apify_reserved_pages"] == 190
+    with sqlite3.connect(run_dir / "state.sqlite") as db:
+        stored = json.loads(db.execute("SELECT value FROM meta WHERE key='config'").fetchone()[0])
+        assert stored["language"] == "pt"
+        assert db.execute(
+            "SELECT status FROM apify_batches WHERE id=?", (rejected,)
+        ).fetchone() == ("abandoned",)
+
+
 def test_cli_rechecks_mixed_payloads_without_remote_calls(tmp_path, monkeypatch):
     queries = tmp_path / "q.txt"
     queries.write_text("q", encoding="utf-8")
