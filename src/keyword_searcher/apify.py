@@ -4,7 +4,9 @@ import json
 import math
 import re
 import sys
-import time
+import threading
+from concurrent.futures import CancelledError
+from dataclasses import dataclass, replace
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -20,8 +22,22 @@ TERMINAL = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
 TRANSITIONAL = {"READY", "RUNNING", "TIMING-OUT", "ABORTING"}
 
 
+def _pause(cancelled, seconds):
+    if cancelled.wait(seconds):
+        raise CancelledError()
+
+
 class ApifyRecoveryRequired(DiscoveryError):
     """Stop before another Actor can be charged for an uncertain batch."""
+
+
+@dataclass(frozen=True)
+class SearchPlan:
+    batch_id: int
+    queries: list[str]
+    run_id: str | None
+    query: str
+    start: int
 
 
 def valid_id(value):
@@ -32,6 +48,11 @@ class ApifyTransport:
     def __init__(self, token, retries=2):
         self.token = token
         self.retries = retries
+        self.cancelled = threading.Event()
+
+    def cancel(self):
+        # Stop local GET polling; never abort or resurrect the paid remote Actor.
+        self.cancelled.set()
 
     def http_error(self, error):
         """Retain bounded API diagnostics without echoing credentials or terminal controls."""
@@ -69,6 +90,8 @@ class ApifyTransport:
         # GET retries are safe. A lost POST response must never create a duplicate run.
         attempts = 1 if body is not None else self.retries + 1
         for attempt in range(attempts):
+            if self.cancelled.is_set():
+                raise CancelledError()
             try:
                 with urlopen(request, timeout=60) as response:
                     raw = response.read(20_000_001)
@@ -81,7 +104,7 @@ class ApifyTransport:
             except (URLError, OSError, TimeoutError, HTTPException) as exc:
                 if attempt == attempts - 1:
                     raise DiscoveryError("apify_network_failure") from exc
-            time.sleep(min(2**attempt, 4))
+            _pause(self.cancelled, min(2**attempt, 4))
         try:
             return json.loads(raw)
         except (ValueError, TypeError) as exc:
@@ -130,7 +153,7 @@ class ApifyTransport:
                 if status != "SUCCEEDED":
                     raise ApifyRecoveryRequired(f"Apify run {run_id} ended with {status}")
                 # Run stats and costs can still be preliminary at first completion.
-                time.sleep(10)
+                _pause(self.cancelled, 10)
                 result = self.request(f"/actor-runs/{run_id}")
                 run = result.get("data") if isinstance(result, dict) else None
                 if not isinstance(run, dict) or run.get("status") != "SUCCEEDED":
@@ -159,7 +182,7 @@ class ApifyTransport:
                 }
             if status not in TRANSITIONAL:
                 raise ApifyRecoveryRequired(f"Apify run {run_id} has unknown status")
-            time.sleep(5)
+            _pause(self.cancelled, 5)
 
     def items(self, dataset_id):
         offset = 0
@@ -259,6 +282,18 @@ class ApifyGoogle:
         )
 
     def search(self, query, start):
+        plan = self.plan_search(query, start)
+        run_id = plan.run_id
+        if run_id is None:
+            run_id = self.start_search(plan)
+            self.store.apify_set_run(plan.batch_id, run_id)
+            plan = replace(plan, run_id=run_id)
+        print(f"Apify: waiting for run {run_id}", file=sys.stderr)
+        evidence, items = self.fetch_search(run_id)
+        return self.import_search(plan, evidence, items)
+
+    def plan_search(self, query, start):
+        """Reserve and identify a batch on the SQLite owner thread."""
         open_batch = self.store.apify_open_batch()
         if open_batch:
             batch_id, batch_queries, run_id, status = open_batch
@@ -290,30 +325,38 @@ class ApifyGoogle:
             print(
                 f"Apify: starting batch {batch_id} ({len(batch_queries)} queries)", file=sys.stderr
             )
-            try:
-                run_id = self.transport.start(
-                    batch_queries,
-                    self.max_pages,
-                    self.country,
-                    self.language,
-                    self.cost_limit,
-                )
-            except DiscoveryError as exc:
-                raise ApifyRecoveryRequired(
-                    f"Apify start not confirmed ({exc}); check Apify Console before resuming "
-                    "to avoid a duplicate paid run"
-                ) from exc
-            self.store.apify_set_run(batch_id, run_id)
-        print(f"Apify: waiting for run {run_id} (batch {batch_id})", file=sys.stderr)
+            run_id = None
+        return SearchPlan(batch_id, batch_queries, run_id, query, start)
+
+    def start_search(self, plan):
+        """Only network I/O; a lost POST response remains an unconfirmed batch."""
+        try:
+            return self.transport.start(
+                plan.queries, self.max_pages, self.country, self.language, self.cost_limit
+            )
+        except DiscoveryError as exc:
+            raise ApifyRecoveryRequired(
+                f"Apify start not confirmed ({exc}); check Apify Console before resuming "
+                "to avoid a duplicate paid run"
+            ) from exc
+
+    def fetch_search(self, run_id):
+        """Only network I/O; the coordinator imports after the entire fetch succeeds."""
         evidence = self.transport.completed(run_id)
         if not isinstance(evidence, dict) or not valid_id(evidence.get("dataset_id")):
             raise ApifyRecoveryRequired("apify_missing_completion_evidence")
+        return evidence, list(self.transport.items(evidence["dataset_id"]))
+
+    def import_search(self, plan, evidence, items):
+        """Validate and atomically import on the SQLite owner thread."""
+        batch_id, batch_queries = plan.batch_id, plan.queries
+        run_id, query, start = plan.run_id, plan.query, plan.start
         discovered = {}
         failures = {}
         error_records = []
         dataset_records = 0
         allowed = set(batch_queries)
-        for item in self.transport.items(evidence["dataset_id"]):
+        for item in items:
             dataset_records += 1
             if isinstance(item, dict) and item.get("#error") is True:
                 try:

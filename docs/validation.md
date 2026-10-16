@@ -1,4 +1,30 @@
-# Validação — versão 0.2.9
+# Validação — versão 0.2.10
+
+## Sobreposição da busca e verificação — 15/10/2026
+
+- Decisão: remover a drenagem entre lotes Apify e a janela de 4N links da 0.2.9.
+  Ambas podiam deixar workers ociosos com trabalho em outras consultas. A busca
+  paralela agora alterna páginas entre consultas disponíveis e antecipa um único
+  lote remoto. Todo SQLite continua no coordenador; o backlog usa arquivo
+  temporário privado. Cada slot liberado é reposto durante a coleta de conclusões.
+- Quinze novos casos cobrem sites antigos sobrepostos ao próximo lote, consulta
+  salva posterior processada durante espera remota, gravação antes do término do
+  Actor, backlog de host ocupado tanto na busca quanto no recheck e 100 workers
+  simultâneos alcançando outra consulta após 500 links de um host.
+- Também cobrem um lote remoto por vez, limites cumulativos/por Actor,
+  equivalência com o caminho sequencial, interrupção durante POST e polling,
+  preservação do ID e de decisões persistidas, retomada sem novo POST, resposta
+  de criação perdida sem retry, validação atômica e consultas salvas após acabar
+  o orçamento. Cancelar o polling local não aborta o Actor remoto.
+- O progresso mostra hosts livres na fila e uma linha Apify independente dos
+  sites. A versão do pacote passa a 0.2.10; esquema SQLite, políticas de decisão,
+  cache, handoff e arquivos de revisão humana não mudam.
+- Testes usam exclusivamente transporte e sites sintéticos. Nenhuma busca paga
+  ou visita real é necessária para validar a sobreposição. O tempo no VPS e a
+  utilização em corpus real ainda precisam ser observados.
+- 308 testes passaram localmente em Windows/Python 3.12.14. Ruff lint/formatação,
+  instalação editável 0.2.10, dependências e ajuda da CLI aprovados. Conferir os
+  checks remotos associados ao commit.
 
 ## Alimentação contínua dos workers — 15/10/2026
 

@@ -1,4 +1,4 @@
-# Arquitetura e contratos — 0.2.9
+# Arquitetura e contratos — 0.2.10
 
 ## Responsabilidade
 
@@ -26,6 +26,9 @@ própria, fonte editorial e conflitos de identidade; a normalização de URLs é
 | audit.py | Amostra offline, backup e correção explícita de estados editoriais |
 | pipeline.py | Iteração, retomada e rechecagem das páginas salvas |
 | workers.py | Resolução concorrente limitada e persistência no fluxo coordenador |
+| parallel_pipeline.py | Leitura alternada de queries e alimentação global dos workers |
+| search_ahead.py | Uma tarefa Apify em paralelo aos sites, sem SQLite na thread |
+| job_queue.py | Backlog temporário em disco, com seleção por host elegível |
 
 O transporte é injetável. Testes de contrato usam dados sintéticos e não precisam
 de credenciais nem de buscas reais.
@@ -35,19 +38,21 @@ de credenciais nem de buscas reais.
 CLI e recheck usam `--workers 8` por padrão; `--workers 1` não cria executor.
 As funções de baixo nível `run`/`recheck_sites` conservam o padrão sequencial para
 compatibilidade; os pontos de entrada passam a quantidade explicitamente.
-Threads executam somente `resolver.resolve`. Apify, leitura/gravação SQLite e
-exportação ficam no coordenador. A fonte percorre consultas e páginas em ordem,
-mas desde a 0.2.9 uma fila única mantém resoluções de páginas/consultas diferentes
-em andamento. Cada resultado concluído é persistido sem esperar os demais.
+Threads de sites executam somente `resolver.resolve`. Desde a 0.2.10, uma thread
+separada faz o POST e os GETs Apify; reserva de páginas, persistência do ID, validação
+e importação do lote permanecem no coordenador, assim como todo acesso SQLite e
+exportação. A leitura alterna entre consultas salvas, preservando a ordem das páginas
+dentro de cada consulta. Cada resultado é persistido sem esperar os demais.
 Exportações conservam a ordenação query/URL do SQLite.
 
-Há no máximo N futures no executor e 4 × N jobs aguardando localmente, com espera
-por conclusões quando a fila enche. Hosts de origem são intercalados; uma resolução
-por host de origem ocupa o pool, enquanto outras desse host aguardam na fila.
-Isso evita preencher o executor com esperas de um mesmo host e limita memória
-sem carregar o corpus inteiro. A janela finita pode restringir o aproveitamento
-quando contém muitos links de poucos hosts. Worker count é teto, não promessa de
-ocupação constante; cache, CPU, latência e fim do corpus também afetam atividade.
+Há no máximo N futures no executor. Os demais jobs ficam num SQLite temporário
+privado, excluído ao fechar. Um índice de cabeças por host permite escolher trabalho
+fora dos hosts ocupados sem percorrer seu backlog inteiro. A antiga janela de 4N
+jobs foi removida porque podia esconder consultas posteriores. Uma resolução por
+host de origem ocupa o pool; o limitador HTTP também cobre destinos de redirects.
+Os payloads em espera ficam em disco; cursores guardam URLs vistas por consulta.
+Worker count é teto, não promessa de ocupação constante: é necessário haver hosts
+independentes prontos; cache, CPU, latência e fim do corpus também afetam atividade.
 
 O coordenador contabiliza jobs por query. Após ler sua última página, registra
 o resultado esperado; só encerra a query no SQLite/progresso quando o contador
@@ -55,9 +60,18 @@ chega a zero. Interrupções identificam queries ainda sem decisões; queries j�
 concluídas mantêm seus estados. Uma falha inesperada do worker é atribuída à
 query original, mesmo se a fonte já avançou para outra, e interrompe o fluxo com
 `site_worker_failed`. O recheck usa os mesmos callbacks sem alterar progresso de
-busca da cópia. Antes de buscar um payload ainda não salvo, o pool é drenado para
-persistir sites disponíveis antes de uma espera remota longa. A concorrência e
-as reservas dos Actors permanecem controladas pelo fluxo principal.
+busca da cópia. O pool não é drenado nas transições de lote. O coordenador continua
+alimentando/verificando sites e persistindo decisões enquanto uma tarefa aguarda a
+Apify. O próximo lote é planejado assim que uma consulta sem páginas é encontrada,
+inclusive se ainda houver trabalho local de lotes anteriores. Só há uma tarefa
+remota: POST, registro do ID no SQLite, polling/fetch e importação atômica precedem
+o próximo POST. Reservas cumulativas e teto por Actor continuam iguais.
+
+Na interrupção durante um POST já enviado, aguarda-se sua resposta para preservar
+o ID, ou mantém-se o lote incerto sem retry automático. Na espera por um run, o
+cancelamento interrompe apenas os GETs locais, sem abortar o Actor. A retomada usa
+o run salvo. Uma chamada de rede bloqueante ainda pode atrasar a parada até seu
+timeout (60 s por chamada Apify). O caminho `--workers 1` continua sequencial.
 
 Cada thread HTTP usa seu próprio opener. Uma Condition protege os slots ativos
 por hostname, normalizado e sem `www`; não é um limite por domínio registrável.
@@ -80,7 +94,8 @@ Não há encerramento forçado de threads: DNS e operações bloqueantes podem a
 a parada. O timeout de 20 s é por operação HTTP, não um deadline de resolução.
 
 O progresso usa seu próprio RLock; callbacks dos workers apenas atualizam o
-terminal. Mostra contagem ativa, fila aguardando, decisões contabilizadas e o tempo
+terminal. Mostra contagem ativa, fila aguardando, hosts elegíveis, estado da Apify,
+decisões contabilizadas e o tempo
 da resolução mais antiga, separado do tempo total. Em paralelo, os contadores de
 páginas e resultados são globais; queries concluídas podem terminar fora da ordem
 de entrada. Quantidade de workers não entra na identidade

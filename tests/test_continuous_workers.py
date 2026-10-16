@@ -276,10 +276,11 @@ def test_global_progress_does_not_reset_between_pages_or_queries():
         progress.end_result(Resolution("pending"))
         progress.begin_query(2, "second")
         progress.page_ready(9)
-        progress.queue_changed(12)
+        progress.queue_changed(12, ready_hosts=7)
         progress.finish_query("complete", index=1)
         assert progress.pages_done == 2
         assert progress.results_total == 16 and progress.results_done == 1
         assert progress.queries_done == 1
         assert "queued=12" in stream.getvalue()
+        assert "ready_hosts=7" in stream.getvalue()
         assert "Query 1/2: complete" in stream.getvalue()
