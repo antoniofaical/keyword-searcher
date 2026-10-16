@@ -29,6 +29,7 @@ def html(name="Example", url="https://example.org/", extra=""):
         '<script type="application/ld+json">'
         + json.dumps({"@type": "Organization", "name": name, "url": url})
         + "</script>"
+        + '<a href="/products">Our products</a>'
         + extra
     )
 
@@ -149,7 +150,6 @@ def test_redirected_source_is_skipped_but_access_responses_stay_pending(
     [
         "https://g2.com/products/x",
         "https://www.linkedin.com/company/a",
-        "https://example.org/news/new-product",
     ],
 )
 def test_non_institutional_not_fetched(url):
@@ -175,17 +175,20 @@ def test_deep_product_url_resolves_to_verified_homepage():
     product = "https://www.alphaebm.com/hospital-food-service-software-uae.html"
     client.get.side_effect = [
         web(html("Alpha EBM", product), product),
-        web('<meta property="og:site_name" content="Alpha EBM">', "https://www.alphaebm.com/"),
+        web(
+            '<meta property="og:site_name" content="Alpha EBM"><a href="/products">Products</a>',
+            "https://www.alphaebm.com/",
+        ),
     ]
     result = WebsiteResolver(client).resolve(SearchResult("Alpha EBM", product))
     assert (result.status, result.url) == ("confirmed", "https://www.alphaebm.com/")
 
 
-def test_site_name_on_homepage_suffices_without_schema():
+def test_site_name_on_homepage_with_own_offer_suffices_without_schema():
     client = Mock()
     client.get.side_effect = [
         web("<title>Product</title>", "https://example.org/product"),
-        web('<meta property="og:site_name" content="Example">'),
+        web('<meta property="og:site_name" content="Example"><a href="/products">Products</a>'),
     ]
     result = WebsiteResolver(client).resolve(SearchResult("Product", "https://example.org/product"))
     assert (result.status, result.name, result.url) == (

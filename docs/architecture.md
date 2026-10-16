@@ -1,11 +1,11 @@
-# Arquitetura e contratos — 0.2.2
+# Arquitetura e contratos — 0.2.3
 
 ## Responsabilidade
 
 Entrada: texto UTF-8, uma query por linha. Saída: `CompanyName;URL;SearchQuery`.
 Apify fornece resultados orgânicos do Google. Ads, notícias, diretórios e
-comparativos não alimentam descoberta indireta. O resolvedor institucional e a
-normalização de URLs mantêm os critérios da versão anterior.
+comparativos não alimentam descoberta indireta. A versão 0.2.3 distingue oferta
+própria, fonte editorial e conflitos de identidade; a normalização de URLs é preservada.
 
 ## Componentes
 
@@ -18,6 +18,8 @@ normalização de URLs mantêm os critérios da versão anterior.
 | search.py | Leitura de payloads SerpApi antigos; nenhuma integração remota |
 | http.py / urls.py | HTTP limitado, normalização e verificação de destinos |
 | resolve.py | Identidade declarada e seleção limitada do entrypoint |
+| identity.py / site_policy.py | Concordância de identidade, oferta própria e fontes |
+| recheck.py | Reavaliação em cópia com backup, sem transporte Apify |
 | store.py | SQLite, esquema versionado, migração e dados para exportação |
 | export.py | Validação de destino externo e escrita atômica por arquivo |
 | audit.py | Amostra offline, backup e correção explícita de estados editoriais |
@@ -98,11 +100,26 @@ após uma interrupção. Um processo por diretório de estado e por pasta de sa�
 
 ## Auditoria e estados de resolução
 
-Fontes reconhecidas pelo resolvedor como `non_institutional_source` ou
-`editorial_or_listing_page` recebem `skipped`, inclusive quando o reconhecimento
-ocorre durante a inspeção do HTML ou após um redirecionamento. Erros de acesso e
-ausência de identidade continuam `pending`. Isso corrige uma inconsistência de
-estado, sem introduzir classificação temática ou identidade por domínio.
+Fontes intermediárias e instituições sem oferta própria recebem `skipped`.
+Artigos próprios podem resolver para a home do fornecedor. `Article` isolado
+não veta identidade institucional nem permite extrair empresas mencionadas.
+Erros de acesso, oferta não verificável e identidade ambígua ficam `pending`.
+O fallback de HTTP 403 tenta somente a home do mesmo host; desafios e erros
+funcionais não permitem confirmação. A evidência guarda a falha original.
+
+Identidade estruturada conflita quando os nomes não concordam nem têm alias
+explícito. Sem metadata, dois contextos concordantes apoiam a identidade.
+Título e domínio de busca não identificam uma empresa. Não há filtro temático.
+São visitadas no máximo cinco URLs por resultado, com cache de 128 entradas e
+8 MiB de conteúdo HTML (o HTML analisado ocupa memória adicional).
+
+`recheck.py` valida payloads salvos, abre o original em modo somente leitura e
+usa SQLite backup para produzir `state-before.sqlite` e uma cópia de trabalho.
+`ApifyGoogle.parse` é usado como leitor estático de formatos novos e legados;
+nenhum transporte é criado. Só a tabela de resoluções da cópia é atualizada.
+Resultados parciais são exportados em interrupções; cada nova saída recusa uma
+pasta existente para preservar revisão humana. As diferenças de decisão são
+registradas separadamente, sem alterar os IDs do material de auditoria.
 
 `Store.open_existing` usa SQLite em modo `ro` por padrão, sem criar ou migrar
 bancos. O comando offline exige esquema 2 e pasta de saída nova. Com a opção
