@@ -29,6 +29,7 @@ def html(name="Example", url="https://example.org/", extra=""):
         '<script type="application/ld+json">'
         + json.dumps({"@type": "Organization", "name": name, "url": url})
         + "</script>"
+        + '<a href="/products">Our products</a>'
         + extra
     )
 
@@ -123,7 +124,25 @@ def test_publisher_not_company():
         + "</script>"
     )
     result = WebsiteResolver(client).resolve(SearchResult("", "https://example.org"))
-    assert result.status != "confirmed"
+    assert (result.status, result.reason) == ("skipped", "editorial_or_listing_page")
+
+
+@pytest.mark.parametrize(
+    "response,expected_status,reason",
+    [
+        (web("", "https://linkedin.com/company/a"), "skipped", "non_institutional_source"),
+        (web("", status=403), "pending", "site_http_403"),
+        (web("", status=203), "pending", "site_http_203"),
+        (web("", status=202), "pending", "site_http_202"),
+    ],
+)
+def test_redirected_source_is_skipped_but_access_responses_stay_pending(
+    response, expected_status, reason
+):
+    client = Mock()
+    client.get.return_value = response
+    result = WebsiteResolver(client).resolve(SearchResult("", "https://example.org"))
+    assert (result.status, result.reason) == (expected_status, reason)
 
 
 @pytest.mark.parametrize(
@@ -131,7 +150,6 @@ def test_publisher_not_company():
     [
         "https://g2.com/products/x",
         "https://www.linkedin.com/company/a",
-        "https://example.org/news/new-product",
     ],
 )
 def test_non_institutional_not_fetched(url):
@@ -157,17 +175,20 @@ def test_deep_product_url_resolves_to_verified_homepage():
     product = "https://www.alphaebm.com/hospital-food-service-software-uae.html"
     client.get.side_effect = [
         web(html("Alpha EBM", product), product),
-        web('<meta property="og:site_name" content="Alpha EBM">', "https://www.alphaebm.com/"),
+        web(
+            '<meta property="og:site_name" content="Alpha EBM"><a href="/products">Products</a>',
+            "https://www.alphaebm.com/",
+        ),
     ]
     result = WebsiteResolver(client).resolve(SearchResult("Alpha EBM", product))
     assert (result.status, result.url) == ("confirmed", "https://www.alphaebm.com/")
 
 
-def test_site_name_on_homepage_suffices_without_schema():
+def test_site_name_on_homepage_with_own_offer_suffices_without_schema():
     client = Mock()
     client.get.side_effect = [
         web("<title>Product</title>", "https://example.org/product"),
-        web('<meta property="og:site_name" content="Example">'),
+        web('<meta property="og:site_name" content="Example"><a href="/products">Products</a>'),
     ]
     result = WebsiteResolver(client).resolve(SearchResult("Product", "https://example.org/product"))
     assert (result.status, result.name, result.url) == (
@@ -220,6 +241,10 @@ def test_pipeline_resume_csv_and_provenance(tmp_path):
     assert resolver.resolve.call_count == first_count
     report = store.export(tmp_path)
     assert report["exported_rows"] == 2
+    assert report["handoff"]["sites"] == 1
+    assert json.loads((tmp_path / "handoff.json").read_text(encoding="utf-8")) == [
+        {"name": "A; B", "url": "https://example.org/"}
+    ]
     with (tmp_path / "companies.csv").open(encoding="utf-8-sig", newline="") as f:
         rows = list(csv.reader(f, delimiter=";"))
     assert rows[0] == ["CompanyName", "URL", "SearchQuery"]

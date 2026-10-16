@@ -145,7 +145,7 @@ class Reply:
 def test_read_requests_retry_without_exposing_credentials(monkeypatch, failure):
     urlopen = Mock(side_effect=[failure, Reply([])])
     monkeypatch.setattr("keyword_searcher.apify.urlopen", urlopen)
-    monkeypatch.setattr("keyword_searcher.apify.time.sleep", lambda _: None)
+    monkeypatch.setattr("keyword_searcher.apify._pause", lambda *_: None)
     assert ApifyTransport("secret").request("/datasets/test/items") == []
     assert urlopen.call_count == 2
 
@@ -259,7 +259,7 @@ def test_completed_waits_through_transient_states_and_reads_stable_evidence(monk
             {"data": {"pendingRequestCount": 0, "handledRequestCount": 1}},
         ]
     )
-    monkeypatch.setattr("keyword_searcher.apify.time.sleep", lambda _: None)
+    monkeypatch.setattr("keyword_searcher.apify._pause", lambda *_: None)
     evidence = transport.completed("run123")
     assert evidence["dataset_id"] == "dataset123"
     assert evidence["cost_usd"] == 0.1

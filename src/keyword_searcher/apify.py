@@ -4,12 +4,15 @@ import json
 import math
 import re
 import sys
-import time
+import threading
+from concurrent.futures import CancelledError
+from dataclasses import dataclass, replace
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .apify_errors import SEARCH_ERROR, mapped_error
 from .models import BudgetExceeded, DiscoveryError, SearchPage, SearchResult
 from .search import parse_legacy
 
@@ -19,8 +22,22 @@ TERMINAL = {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}
 TRANSITIONAL = {"READY", "RUNNING", "TIMING-OUT", "ABORTING"}
 
 
+def _pause(cancelled, seconds):
+    if cancelled.wait(seconds):
+        raise CancelledError()
+
+
 class ApifyRecoveryRequired(DiscoveryError):
     """Stop before another Actor can be charged for an uncertain batch."""
+
+
+@dataclass(frozen=True)
+class SearchPlan:
+    batch_id: int
+    queries: list[str]
+    run_id: str | None
+    query: str
+    start: int
 
 
 def valid_id(value):
@@ -31,6 +48,11 @@ class ApifyTransport:
     def __init__(self, token, retries=2):
         self.token = token
         self.retries = retries
+        self.cancelled = threading.Event()
+
+    def cancel(self):
+        # Stop local GET polling; never abort or resurrect the paid remote Actor.
+        self.cancelled.set()
 
     def http_error(self, error):
         """Retain bounded API diagnostics without echoing credentials or terminal controls."""
@@ -68,6 +90,8 @@ class ApifyTransport:
         # GET retries are safe. A lost POST response must never create a duplicate run.
         attempts = 1 if body is not None else self.retries + 1
         for attempt in range(attempts):
+            if self.cancelled.is_set():
+                raise CancelledError()
             try:
                 with urlopen(request, timeout=60) as response:
                     raw = response.read(20_000_001)
@@ -80,7 +104,7 @@ class ApifyTransport:
             except (URLError, OSError, TimeoutError, HTTPException) as exc:
                 if attempt == attempts - 1:
                     raise DiscoveryError("apify_network_failure") from exc
-            time.sleep(min(2**attempt, 4))
+            _pause(self.cancelled, min(2**attempt, 4))
         try:
             return json.loads(raw)
         except (ValueError, TypeError) as exc:
@@ -129,7 +153,7 @@ class ApifyTransport:
                 if status != "SUCCEEDED":
                     raise ApifyRecoveryRequired(f"Apify run {run_id} ended with {status}")
                 # Run stats and costs can still be preliminary at first completion.
-                time.sleep(10)
+                _pause(self.cancelled, 10)
                 result = self.request(f"/actor-runs/{run_id}")
                 run = result.get("data") if isinstance(result, dict) else None
                 if not isinstance(run, dict) or run.get("status") != "SUCCEEDED":
@@ -158,7 +182,7 @@ class ApifyTransport:
                 }
             if status not in TRANSITIONAL:
                 raise ApifyRecoveryRequired(f"Apify run {run_id} has unknown status")
-            time.sleep(5)
+            _pause(self.cancelled, 5)
 
     def items(self, dataset_id):
         offset = 0
@@ -248,9 +272,28 @@ class ApifyGoogle:
             or not isinstance(reason, str)
         ):
             raise DiscoveryError("apify_invalid_coverage")
-        return SearchPage(results, start + 10 if payload["has_next"] else None, status, reason)
+        search_error = payload.get("search_error", False)
+        if type(search_error) is not bool or (
+            search_error and (rows or status != "incomplete" or reason != SEARCH_ERROR)
+        ):
+            raise DiscoveryError("apify_invalid_search_error")
+        return SearchPage(
+            results, start + 10 if payload["has_next"] else None, status, reason, search_error
+        )
 
     def search(self, query, start):
+        plan = self.plan_search(query, start)
+        run_id = plan.run_id
+        if run_id is None:
+            run_id = self.start_search(plan)
+            self.store.apify_set_run(plan.batch_id, run_id)
+            plan = replace(plan, run_id=run_id)
+        print(f"Apify: waiting for run {run_id}", file=sys.stderr)
+        evidence, items = self.fetch_search(run_id)
+        return self.import_search(plan, evidence, items)
+
+    def plan_search(self, query, start):
+        """Reserve and identify a batch on the SQLite owner thread."""
         open_batch = self.store.apify_open_batch()
         if open_batch:
             batch_id, batch_queries, run_id, status = open_batch
@@ -282,27 +325,47 @@ class ApifyGoogle:
             print(
                 f"Apify: starting batch {batch_id} ({len(batch_queries)} queries)", file=sys.stderr
             )
-            try:
-                run_id = self.transport.start(
-                    batch_queries,
-                    self.max_pages,
-                    self.country,
-                    self.language,
-                    self.cost_limit,
-                )
-            except DiscoveryError as exc:
-                raise ApifyRecoveryRequired(
-                    f"Apify start not confirmed ({exc}); check Apify Console before resuming "
-                    "to avoid a duplicate paid run"
-                ) from exc
-            self.store.apify_set_run(batch_id, run_id)
-        print(f"Apify: waiting for run {run_id} (batch {batch_id})", file=sys.stderr)
+            run_id = None
+        return SearchPlan(batch_id, batch_queries, run_id, query, start)
+
+    def start_search(self, plan):
+        """Only network I/O; a lost POST response remains an unconfirmed batch."""
+        try:
+            return self.transport.start(
+                plan.queries, self.max_pages, self.country, self.language, self.cost_limit
+            )
+        except DiscoveryError as exc:
+            raise ApifyRecoveryRequired(
+                f"Apify start not confirmed ({exc}); check Apify Console before resuming "
+                "to avoid a duplicate paid run"
+            ) from exc
+
+    def fetch_search(self, run_id):
+        """Only network I/O; the coordinator imports after the entire fetch succeeds."""
         evidence = self.transport.completed(run_id)
         if not isinstance(evidence, dict) or not valid_id(evidence.get("dataset_id")):
             raise ApifyRecoveryRequired("apify_missing_completion_evidence")
+        return evidence, list(self.transport.items(evidence["dataset_id"]))
+
+    def import_search(self, plan, evidence, items):
+        """Validate and atomically import on the SQLite owner thread."""
+        batch_id, batch_queries = plan.batch_id, plan.queries
+        run_id, query, start = plan.run_id, plan.query, plan.start
         discovered = {}
+        failures = {}
+        error_records = []
+        dataset_records = 0
         allowed = set(batch_queries)
-        for item in self.transport.items(evidence["dataset_id"]):
+        for item in items:
+            dataset_records += 1
+            if isinstance(item, dict) and item.get("#error") is True:
+                try:
+                    error = mapped_error(item, allowed, self.max_pages)
+                except DiscoveryError as exc:
+                    raise ApifyRecoveryRequired(str(exc)) from exc
+                failures[error["query"], error["page"]] = error
+                error_records.append(error)
+                continue
             if not isinstance(item, dict) or not isinstance(item.get("searchQuery"), dict):
                 raise ApifyRecoveryRequired("apify_missing_search_query")
             term, page = item["searchQuery"].get("term"), item["searchQuery"].get("page")
@@ -318,12 +381,13 @@ class ApifyGoogle:
             if (term, page) in discovered:
                 raise ApifyRecoveryRequired("apify_duplicate_query_page")
             discovered[term, page] = item
-        if not discovered:
+        positions = set(discovered) | set(failures)
+        if not positions:
             raise ApifyRecoveryRequired("apify_empty_dataset")
-        if any((term, 1) not in discovered for term in batch_queries):
+        if any((term, 1) not in positions for term in batch_queries):
             raise ApifyRecoveryRequired(f"Apify run {run_id} omitted queries; inspect its dataset")
         for term in batch_queries:
-            pages = sorted(page for q, page in discovered if q == term)
+            pages = sorted(page for q, page in positions if q == term)
             if pages != list(range(1, pages[-1] + 1)):
                 raise ApifyRecoveryRequired("apify_missing_intermediate_page")
             # Old mixed runs have no reliable offset mapping.
@@ -332,36 +396,56 @@ class ApifyGoogle:
                 for _, raw in self.store.saved_pages(term)
             ):
                 raise ApifyRecoveryRequired("apify_legacy_offset_mapping_unverified")
-        reason = completion_reason(evidence, len(discovered))
+        reason = completion_reason(evidence, dataset_records)
+        evidence = dict(
+            evidence,
+            dataset_records=dataset_records,
+            search_errors=error_records,
+            completion_reason=reason,
+        )
         coverage = {}
         for term in batch_queries:
-            last = max(page for q, page in discovered if q == term)
-            if reason:
+            last = max(page for q, page in positions if q == term)
+            failed_pages = sorted(page for q, page in failures if q == term)
+            if failed_pages:
+                status, end_reason = "incomplete", SEARCH_ERROR
+            elif reason:
                 status, end_reason = "incomplete", reason
             elif last == self.max_pages:
                 status, end_reason = "limited", "max_pages"
             else:
                 status, end_reason = "complete", ""
             coverage[term] = {
-                "pages": last,
+                "pages": sum(q == term for q, _page in discovered),
+                "last_page": last,
+                "failed_pages": failed_pages,
                 "status": status,
                 "reason": end_reason,
                 "run_id": run_id,
             }
         pages = []
-        for (term, page), item in sorted(discovered.items()):
+        for term, page in sorted(positions):
+            item = discovered.get((term, page))
             summary = coverage[term]
             payload = {
                 "provider": "apify-google",
-                "organicResults": item["organicResults"],
-                "has_next": (term, page + 1) in discovered,
+                "organicResults": item["organicResults"] if item is not None else [],
+                "has_next": (term, page + 1) in positions,
                 "end_status": summary["status"],
                 "end_reason": summary["reason"],
                 "searchQuery": {"term": term, "page": page},
             }
+            if item is None:
+                payload["search_error"] = True
             self.parse(payload, (page - 1) * 10)
             pages.append((term, (page - 1) * 10, payload))
         self.store.apify_import_batch(batch_id, pages, coverage, evidence)
+        if error_records:
+            print(
+                f"Apify: imported {len(discovered)} search pages; "
+                f"{len(error_records)} error records; affected queries remain incomplete",
+                file=sys.stderr,
+            )
         result = self.store.page(query, start)
         if result is None:
             raise DiscoveryError("apify_missing_requested_page")
